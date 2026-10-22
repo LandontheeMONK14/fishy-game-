@@ -1,0 +1,15 @@
+STILLWATER — ASSET PROVENANCE
+
+All landscape geometry, vegetation, boats, dock structures, fishing equipment,
+fish meshes, water/sky shaders, interface styling, and synthesized audio were
+created procedurally for this repository. There are no downloaded art assets,
+external fonts, hotlinked textures, music recordings, or GTA-derived assets.
+These original project assets are distributed under the repository's Apache-2.0
+license; see LICENSE.
+
+Runtime libraries (not art assets):
+Three.js — Three.js authors — MIT — https://github.com/mrdoob/three.js
+The installed dependency includes its upstream license. Vite, TypeScript and
+Vitest are development/build tools; their licenses remain with their packages.
+
+No affiliation with Rockstar Games or any other game studio is implied.
