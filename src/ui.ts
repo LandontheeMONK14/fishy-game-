@@ -261,6 +261,7 @@ export class GameUI {
     if (!this.modal) this.returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     this.modal = modal;
     this.overlay.hidden = false;
+    this.overlay.classList.toggle('catch-overlay', modal === 'catch');
     this.panel.className = `lake-dialog ${modal}-dialog`;
     delete this.panel.dataset.testid;
     this.panel.setAttribute('aria-label', title);
@@ -316,7 +317,7 @@ export class GameUI {
     this.panel.dataset.testid = 'catch';
     this.body.append(node('p', 'eyebrow', 'A MOMENT TO REMEMBER'), node('div', 'catch-emblem', '◈'), node('p', 'catch-rarity', species.rarity), node('h1', '', species.name));
     const stats = node('p', 'catch-weight', `${caught.weight.toFixed(2)} kg`);
-    this.body.append(stats, node('p', 'muted-copy', caught.record ? 'A new personal best. Recorded in your journal.' : 'Recorded in your journal. A good story, either way.'));
+    this.body.append(stats, node('p', 'muted-copy', caught.record ? 'A new personal best. Choose below to add it to your journal.' : 'Choose below to add this catch to your journal. A good story, either way.'));
     const choices = node('div', 'catch-choices');
     const keep = button(`Keep · ${caught.value} ◈`, 'keep', undefined, 'primary');
     if ((this.save?.inventory.length ?? 0) >= 30) {
@@ -324,13 +325,14 @@ export class GameUI {
       keep.textContent = 'Hold full · release this catch';
     }
     choices.append(keep, button('Release to the lake', 'release'));
-    this.body.append(choices, node('p', 'small-copy', 'Keep to sell at the dock. Release to let the story continue.'));
+    this.body.append(choices, node('p', 'small-copy', 'Keep to sell at the dock. Release for patience, not coins: your slack tolerance grows by up to 2 seconds after 20 releases.'));
     this.focusModal();
   }
 
   private buildTab(content: HTMLElement): void {
     if (this.tab === 'Market') {
       content.append(node('h2', '', 'The day’s catch'), node('p', 'muted-copy', 'Sell what you keep. Your discoveries and records are yours forever.'));
+      content.append(node('p', 'inventory-summary'));
       for (const species of SPECIES) {
         const row = this.row(content, species.name, species.rarity);
         row.dataset.species = species.id;
@@ -427,6 +429,7 @@ export class GameUI {
     if (!save || this.modal !== 'menu') return;
     const content = this.body.querySelector('.dock-content')!;
     if (this.tab === 'Market') {
+      this.text(content.querySelector('.inventory-summary')!, `Boat hold · ${save.inventory.length} / 30 catches`);
       for (const row of content.querySelectorAll<HTMLElement>('[data-species]')) {
         const catches = save.inventory.filter(c => c.species === row.dataset.species);
         const total = catches.reduce((sum, c) => sum + c.value, 0);

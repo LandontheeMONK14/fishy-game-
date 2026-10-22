@@ -117,12 +117,15 @@ input[type="range"] { accent-color: var(--gold); width: 140px; min-height: 32px;
 .save-actions { display: flex; gap: 10px; margin: 12px 0 20px; }
 .save-actions button { flex: 1; font-size: 12px; }
 .danger-button { color: #f0b5a1; border-color: #da9b8155; font-size: 11px; }
-.catch-dialog { width: min(410px, 100%); text-align: center; }
-.catch-dialog .dialog-body { padding: 30px; }
-.catch-emblem { font-size: 70px; color: var(--gold); line-height: 1; margin: 20px 0; }
+.catch-overlay { justify-items: end; background: linear-gradient(90deg, transparent 40%, #071b2638); backdrop-filter: none; }
+.catch-dialog { width: min(350px, 100%); text-align: center; }
+.catch-dialog .dialog-body { padding: 25px; }
+.catch-emblem { display: none; }
+.catch-dialog h1 { font-size: 29px; }
 .catch-rarity { text-transform: uppercase; color: var(--gold); font-size: 9px; letter-spacing: .2em; margin-bottom: 10px; }
 .catch-weight { font-size: 25px; color: var(--gold); margin: 0 0 14px; font-weight: 300; }
 .catch-choices { display: grid; gap: 10px; }
+.inventory-summary { color: var(--gold); font-size: 10px; letter-spacing: .08em; margin: 20px 0 2px; text-transform: uppercase; }
 .error-dialog { max-width: 450px; }
 .error-message { font-size: 13px; color: #f0c9b3; line-height: 1.7; overflow-wrap: anywhere; white-space: pre-wrap; }
 .touch-controls { display: none; position: absolute; left: max(20px, env(safe-area-inset-left)); right: max(20px, env(safe-area-inset-right)); bottom: max(20px, env(safe-area-inset-bottom)); align-items: end; justify-content: space-between; gap: 16px; }
@@ -166,6 +169,17 @@ input[type="range"] { accent-color: var(--gold); width: 140px; min-height: 32px;
   .lake-toolbar [data-action="dock"] span { font-size: 15px; }
   .touch-controls { left: 12px; right: 12px; }
 }
+@media (max-width: 680px) and (orientation: portrait) {
+  .catch-overlay { align-items: end; justify-items: center; background: linear-gradient(transparent 40%, #071b2640); }
+  .catch-overlay .catch-dialog { width: min(440px, 100%); max-height: 54dvh; }
+  .catch-dialog .dialog-body { padding: 19px 20px; }
+  .catch-dialog h1 { font-size: 26px; margin-bottom: 8px; }
+  .catch-dialog .muted-copy { margin-bottom: 14px; font-size: 11px; }
+  .catch-weight { font-size: 22px; margin-bottom: 10px; }
+  .catch-choices { grid-template-columns: 1fr 1fr; }
+  .catch-choices button { font-size: 11px; padding: 10px; }
+  .catch-dialog .small-copy { margin-bottom: 0; }
+}
 @media (max-height: 550px) and (orientation: landscape) {
   .modal-overlay { padding: 10px max(18px, env(safe-area-inset-right)) 10px max(18px, env(safe-area-inset-left)); }
   .welcome-dialog { max-width: 570px; }
@@ -183,7 +197,7 @@ input[type="range"] { accent-color: var(--gold); width: 140px; min-height: 32px;
   .phase-label { margin-bottom: 5px; }
   .touch-actions { flex-direction: column-reverse; align-items: end; }
   .touch-controls { bottom: max(12px, env(safe-area-inset-bottom)); }
-  .catch-dialog { width: min(530px, 100%); }
+  .catch-overlay .catch-dialog { width: min(340px, 46vw); }
   .catch-dialog .dialog-body { padding: 18px 25px; }
   .catch-emblem { display: none; }
   .catch-dialog h1 { font-size: 26px; margin-bottom: 8px; }
