@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SAVE_KEY, createSave, exportSave, importSave, loadSave, persistSave, validateSave } from '../src/persistence';
+import { catchTier, mastery } from '../src/simulation';
 
 afterEach(() => vi.unstubAllGlobals());
 const storage = () => {
@@ -32,6 +33,24 @@ describe('versioned validated saves', () => {
     expect(importSave('{')).toBeNull();
     expect(importSave('null')).toBeNull();
     expect(importSave(' '.repeat(1_000_001))).toBeNull();
+  });
+  it('preserves pre-upgrade v2 exports and derives rewards without rewriting old catches', () => {
+    const text = JSON.stringify({
+      version: 2, coins: 123, inventory: [{ id: 1, species: 'bass', weight: 2.7, value: 51, record: true }],
+      journal: { bass: { count: 4, record: 2.7 } }, released: 2, caught: 4,
+      rod: 1, line: 0, paint: 'teal', paints: ['teal'], name: 'Old journal',
+      quests: { 'first-catches': { accepted: true, claimed: true, base: 0 } },
+      settings: { quality: 'low', assist: true, reducedMotion: true, volume: .2, muted: true },
+      nextCatchId: 5,
+    });
+    const save = importSave(text)!;
+    expect(save).not.toBeNull();
+    expect(JSON.parse(exportSave(save))).toEqual(JSON.parse(text));
+    expect(catchTier(save.inventory[0])).toBe('Trophy');
+    expect(mastery(save).level).toBeGreaterThanOrEqual(1);
+    expect(save.inventory[0].value).toBe(51);
+    expect(importSave(JSON.stringify({ ...save, mastery: 999 }))).toBeNull();
+    expect(importSave(text.replace('"weight":2.7', '"weight":-2'))).toBeNull();
   });
   it.each([
     { version: 1 }, { version: 3 }, { coins: -1 }, { coins: Infinity }, { coins: 0.5 },

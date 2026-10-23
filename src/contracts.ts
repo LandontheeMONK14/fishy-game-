@@ -36,7 +36,11 @@ export interface Snapshot {
   stamina: number;
   distance: number;
   runDirection: number;
-  behavior: 'rest' | 'run' | 'jump';
+  behavior: 'rest' | 'tell' | 'run' | 'jump';
+  precision: boolean;
+  hotspot: string | null;
+  lureHint: string;
+  surgeIn: number;
   bossPhase: number;
   biteRemaining: number;
   catch: Catch | null;
