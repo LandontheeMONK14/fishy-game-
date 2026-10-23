@@ -1,6 +1,44 @@
 import type { Catch, Controls, Lure, Point, Save, Snapshot, SpeciesId } from './contracts';
 
 export const UPGRADE_COSTS = [90, 180, 320] as const;
+export const HOTSPOTS: { name: string; x: number; z: number; radius: number; lure: Lure; species: SpeciesId }[] = [
+  { name: 'Emerald pool', x: 0, z: 12, radius: 5, lure: 'spinner', species: 'bass' },
+  { name: 'Sunset reeds', x: -36, z: 2, radius: 6, lure: 'spinner', species: 'perch' },
+  { name: 'Silverfin spring', x: 36, z: -2, radius: 6, lure: 'fly', species: 'trout' },
+  { name: 'Northern channel', x: 0, z: -27, radius: 6, lure: 'minnow', species: 'pike' },
+  { name: 'Gilded crown', x: 0, z: -46, radius: 5, lure: 'minnow', species: 'king' },
+];
+const BASE_WEIGHT: Record<SpeciesId, number> = { perch: 0.6, trout: 1.1, bass: 1.8, pike: 3.2, king: 8 };
+const FIGHT_PROFILES = {
+  perch: { rest: 2.2, tell: 0.9, run: 1.1, jump: 0, recovery: 1.2, drain: 0.105, surge: 0.13 },
+  bass: { rest: 1.2, tell: 0.75, run: 1.4, jump: 0.45, recovery: 1.1, drain: 0.09, surge: 0.21 },
+  trout: { rest: 1.3, tell: 0.85, run: 0.7, jump: 1.15, recovery: 0.8, drain: 0.095, surge: 0.17 },
+  pike: { rest: 1.5, tell: 1, run: 2.7, jump: 0, recovery: 1.2, drain: 0.085, surge: 0.23 },
+};
+const KING_PROFILES = [
+  { rest: 1.8, tell: 1, run: 2.6, jump: 0, recovery: 1.4, drain: 0.07, surge: 0.22 },
+  { rest: 1.1, tell: 0.9, run: 0.8, jump: 1.3, recovery: 1.2, drain: 0.075, surge: 0.19 },
+  { rest: 0.85, tell: 0.7, run: 1.1, jump: 0.55, recovery: 1.6, drain: 0.085, surge: 0.2 },
+];
+
+export function hotspotAt(point: Point): typeof HOTSPOTS[number] | undefined {
+  return isWater(point) ? HOTSPOTS.find(spot => distance(point, spot) <= spot.radius) : undefined;
+}
+
+export function catchTier(caught: Pick<Catch, 'species' | 'weight'>): 'Standard' | 'Trophy' | 'Legendary' {
+  const base = BASE_WEIGHT[caught.species];
+  return caught.weight >= Math.round(base * 160) / 100 ? 'Legendary'
+    : caught.weight >= Math.round(base * 125) / 100 ? 'Trophy' : 'Standard';
+}
+
+export function mastery(save: Save): { title: string; level: number; progress: number; goal: number } {
+  const experience = save.caught + save.released;
+  const level = Math.min(5, Math.floor(experience / 5));
+  return {
+    title: ['Newcomer', 'Water reader', 'Reed keeper', 'Lake guide', 'Master angler', 'Stillwater guardian'][level],
+    level, progress: level === 5 ? 5 : experience % 5, goal: 5,
+  };
+}
 export const QUESTS = [
   { id: 'first-catches', title: 'A patient angler', goal: 3, reward: 75, description: 'Catch three fish after accepting this task.' },
   { id: 'gentle-release', title: 'Leave a little wonder', goal: 2, reward: 60, description: 'Release two fish after accepting this task.' },
@@ -63,7 +101,8 @@ export class Game {
   private biteAt = 3;
   private castFrom: Point = { x: 0, z: 30 };
   private blockedInput = false;
-  private fightTime = 0;
+  private cycleTime = 0;
+  private cycleCount = 0;
   private dangerTime = 0;
   private looseTime = 0;
   private runSeed = 0;
@@ -77,7 +116,7 @@ export class Game {
       float: { x: 0, z: 20, y: 0 }, fish: { x: 0, z: 20, y: -0.4, species: 'bass', heading: 0 },
       tension: 0, stamina: 1, distance: 10, runDirection: 0, behavior: 'rest',
       bossPhase: 0, biteRemaining: 0, catch: null, lure: 'spinner', message: 'Find your water. Hold to cast.',
-      habitat: 'Open water', paused: false,
+      habitat: 'Open water', paused: false, precision: false, hotspot: null, lureHint: '', surgeIn: 0,
     };
     this.refreshTarget();
   }
@@ -95,6 +134,12 @@ export class Game {
     s.target = { x: s.boat.x + Math.sin(s.aimYaw) * range, z: s.boat.z - Math.cos(s.aimYaw) * range };
     s.legalTarget = isCastLegal(s.boat, s.target);
     s.habitat = habitatAt(s.target);
+    const spot = hotspotAt(s.target);
+    s.hotspot = spot?.name ?? null;
+    s.precision = s.legalTarget && spot?.lure === s.lure;
+    s.lureHint = spot
+      ? `${spot.name} · ${spot.lure}${spot.species === 'king' && !bossUnlocked(this.save) ? ' · discover four species first' : ''}`
+      : 'Find a glowing habitat ring for a precision cast.';
   }
   setPaused(paused: boolean): void {
     if (this.snapshot.paused === paused) return;
@@ -125,9 +170,9 @@ export class Game {
     }
     this.castFrom = { x: s.boat.x, z: s.boat.z };
     s.float = { ...this.castFrom, y: 1.3 };
-    this.biteAt = 3 + this.roll() * 4;
+    this.biteAt = s.precision ? 1.5 + this.roll() : 2.5 + this.roll() * 1.5;
     this.transition('cast');
-    s.message = 'The lure sails over the water.';
+    s.message = s.precision ? `Precision cast! ${s.hotspot}: faster bites and larger fish.` : 'The lure sails over the water.';
   }
   action(): void {
     const s = this.snapshot;
@@ -148,6 +193,8 @@ export class Game {
     this.snapshot.biteRemaining = 0;
     this.snapshot.tension = 0;
     this.snapshot.bossPhase = 0;
+    this.snapshot.behavior = 'rest';
+    this.snapshot.surgeIn = 0;
     this.transition('aim');
     this.snapshot.message = message;
     this.refreshTarget();
@@ -155,6 +202,7 @@ export class Game {
   setLure(lure: Lure): void {
     if (this.snapshot.phase === 'aim' && ['spinner', 'fly', 'minnow'].includes(lure)) {
       this.snapshot.lure = lure;
+      this.refreshTarget();
       this.snapshot.message = `${lure[0].toUpperCase()}${lure.slice(1)} equipped.`;
     }
   }
@@ -211,7 +259,7 @@ export class Game {
       };
       if (t >= 1) {
         this.transition('wait');
-        s.message = 'Watch the float. Small nibbles are not a bite.';
+        s.message = s.precision ? `${s.hotspot}: matched lure! Watch for a quick bite.` : `Watch the float. ${s.lureHint}`;
       }
     } else if (s.phase === 'wait') {
       const nibble = this.phaseTime > 1 && Math.sin(this.phaseTime * 6) > 0.88;
@@ -257,6 +305,8 @@ export class Game {
   }
   private chooseSpecies(): SpeciesId {
     const { target, lure } = this.snapshot;
+    const spot = hotspotAt(target);
+    if (spot?.lure === lure && (spot.species !== 'king' || bossUnlocked(this.save))) return spot.species;
     if (target.z < -38 && lure === 'minnow' && bossUnlocked(this.save)) return 'king';
     if (target.z < -15 && lure === 'minnow') return 'pike';
     if (target.x < -22 && target.z >= -15 && lure === 'spinner') return this.roll() < 0.8 ? 'perch' : 'bass';
@@ -273,42 +323,59 @@ export class Game {
     s.behavior = 'rest';
     s.bossPhase = species === 'king' ? 1 : 0;
     s.biteRemaining = 0;
-    this.fightTime = this.dangerTime = this.looseTime = 0;
+    this.cycleTime = this.cycleCount = this.dangerTime = this.looseTime = 0;
     this.runSeed = this.roll() * Math.PI * 2;
     this.lastBehavior = '';
     this.transition('fight');
-    s.message = species === 'king' ? 'The Gilded King! Phase 1: let the golden surges run.' : 'Hooked! Reel in rests; give line during runs.';
+    s.message = species === 'king' ? 'The Gilded King! Phase 1: long golden runs. Reel through rests and tells.' : 'Hooked! Reel in rests and tells; ease and follow during runs or jumps.';
   }
   private fight(input: Controls): void {
     const s = this.snapshot;
     const king = s.fish.species === 'king';
-    this.fightTime += STEP;
     const nextPhase = king ? s.stamina > 0.66 ? 1 : s.stamina > 0.33 ? 2 : 3 : 0;
     const phaseChanged = nextPhase !== s.bossPhase;
     s.bossPhase = nextPhase;
-    const cycle = this.fightTime % (king ? 7 : 6);
-    s.behavior = cycle < 1.5 ? 'rest' : cycle < (king ? 4 : 3.3) ? 'run' : cycle < (king ? 4.7 : 3.8) ? 'jump' : 'rest';
-    s.runDirection = Math.sin(this.runSeed + Math.floor(this.fightTime / (king ? 7 : 6)) * 2.1) >= 0 ? 1 : -1;
+    // Each burst has its own safe tell. King phases restart with recovery, never an unannounced attack.
+    const profile = s.fish.species === 'king' ? KING_PROFILES[Math.max(0, s.bossPhase - 1)] : FIGHT_PROFILES[s.fish.species];
+    if (phaseChanged) { this.cycleTime = 0; this.cycleCount++; }
+    this.cycleTime += STEP;
+    const stages: { behavior: Snapshot['behavior']; duration: number; next?: 'run' | 'jump' }[] = [
+      { behavior: 'rest', duration: profile.rest },
+      { behavior: 'tell', duration: profile.tell, next: 'run' },
+      { behavior: 'run', duration: profile.run },
+      ...(profile.jump ? [{ behavior: 'tell' as const, duration: profile.tell, next: 'jump' as const }, { behavior: 'jump' as const, duration: profile.jump }] : []),
+      { behavior: 'rest', duration: profile.recovery },
+    ];
+    const duration = stages.reduce((sum, stage) => sum + stage.duration, 0);
+    if (this.cycleTime >= duration) { this.cycleTime -= duration; this.cycleCount++; }
+    let elapsed = this.cycleTime;
+    let stageIndex = 0;
+    while (stageIndex < stages.length - 1 && elapsed >= stages[stageIndex].duration) elapsed -= stages[stageIndex++].duration;
+    const stage = stages[stageIndex];
+    s.behavior = stage.behavior;
+    s.surgeIn = stage.behavior === 'tell' ? stage.duration - elapsed
+      : stage.behavior === 'rest' ? stage.duration - elapsed + (stageIndex === 0 ? profile.tell : profile.rest + profile.tell) : 0;
+    const direction = Math.sin(this.runSeed + this.cycleCount * 2.1) >= 0 ? 1 : -1;
+    s.runDirection = direction * (stageIndex >= 3 && king && s.bossPhase >= 2 ? -1 : 1);
     if (phaseChanged || s.behavior !== this.lastBehavior) {
-      s.message = `${king ? `King phase ${s.bossPhase}: ` : ''}${s.behavior === 'rest' ? 'The fish rests — reel steadily.' : s.behavior === 'run' ? 'A surge is coming! Give line and steer with the fish.' : 'Jump! Ease the line until it lands.'}`;
+      s.message = `${king ? `King phase ${s.bossPhase} (${['', 'long runs', 'turning leaps', 'quick bursts'][s.bossPhase]}): ` : ''}${s.behavior === 'rest' ? 'The fish rests — reel steadily.' : s.behavior === 'tell' ? `${stage.next === 'jump' ? 'Leap' : 'Run'} building! Keep reeling until the tell ends; prepare to ease and follow.` : s.behavior === 'run' ? 'Run! Ease or give line; steer with the fish.' : 'Jump! Ease or give line and follow its direction.'}`;
       this.lastBehavior = s.behavior;
     }
-    const rest = s.behavior === 'rest';
+    const rest = s.behavior === 'rest' || s.behavior === 'tell';
     const slack = input.slack;
     const reel = input.reel && !slack;
     const assist = this.save.settings.assist;
     const resistance = 1 + this.save.line * 0.2 + (assist ? 0.25 : 0);
-    const power = 1 + this.save.rod * 0.22;
-    const surge = king ? 0.18 + s.bossPhase * 0.035 : 0.15;
-    let pressure = rest ? -0.08 : surge;
-    if (reel) pressure += rest ? 0.05 : 0.24;
+    const power = 1 + this.save.rod * 0.22 + mastery(this.save).level * 0.03;
+    let pressure = rest ? -0.025 : profile.surge;
+    if (reel) pressure += rest ? 0.04 : 0.24;
     if (slack) pressure -= rest ? 0.15 : 0.42;
     if (!rest && input.steer * s.runDirection > 0) pressure -= 0.055;
     if (!rest && input.steer * s.runDirection < 0) pressure += 0.06;
     s.tension = clamp(s.tension + pressure / resistance * STEP, 0, 1);
     if (rest && reel) {
       s.distance = Math.max(1.8, s.distance - (king ? 2.5 : 3.2) * power * STEP);
-      s.stamina = Math.max(0, s.stamina - (king ? 0.055 : 0.075) * power * STEP);
+      s.stamina = Math.max(0, s.stamina - profile.drain * power * STEP);
     } else if (!rest) {
       s.distance += (slack ? 0.7 : 0.35) * STEP;
       if (reel) s.stamina = Math.max(0, s.stamina - 0.016 * power * STEP);
@@ -331,19 +398,22 @@ export class Game {
     } else {
       s.distance = distance(s.boat, s.fish);
     }
-    s.fish.y = s.behavior === 'jump' ? Math.sin((king ? cycle - 4 : cycle - 3.3) / (king ? 0.7 : 0.5) * Math.PI) * 1.5 : -0.4;
+    s.fish.y = s.behavior === 'jump' ? Math.sin(elapsed / profile.jump * Math.PI) * (king ? 2 : 1.5) : -0.4;
     s.float = { x: s.fish.x, z: s.fish.z, y: 0 };
     if (s.stamina <= 0.001 && s.distance <= 2.2) this.land();
   }
   private land(): void {
     const s = this.snapshot;
-    const base = { perch: 0.6, trout: 1.1, bass: 1.8, pike: 3.2, king: 8 }[s.fish.species];
-    const weight = Math.round(base * (0.8 + this.roll() * 0.8) * 100) / 100;
-    const value = Math.round(weight * { perch: 16, trout: 22, bass: 19, pike: 26, king: 45 }[s.fish.species]);
-    this.pending = { id: this.save.nextCatchId, species: s.fish.species, weight, value, record: weight > (this.save.journal[s.fish.species]?.record ?? 0) };
+    const base = BASE_WEIGHT[s.fish.species];
+    const weight = Math.round(base * (0.8 + this.roll() * 0.8 + (s.precision ? 0.25 : 0)) * 100) / 100;
+    const tier = catchTier({ species: s.fish.species, weight });
+    const record = weight > (this.save.journal[s.fish.species]?.record ?? 0);
+    const multiplier = (tier === 'Legendary' ? 1.8 : tier === 'Trophy' ? 1.35 : 1) * (record ? 1.15 : 1);
+    const value = Math.round(weight * { perch: 16, trout: 22, bass: 19, pike: 26, king: 45 }[s.fish.species] * multiplier);
+    this.pending = { id: this.save.nextCatchId, species: s.fish.species, weight, value, record };
     s.catch = { ...this.pending };
     this.transition('land');
-    s.message = 'Landed! Choose keep or release.';
+    s.message = `${tier} landed!${record ? ' Personal best · +15% value.' : ''} Keep for market value or release for extra mastery.`;
   }
   resolveCatch(keep: boolean): void {
     if (this.snapshot.paused || this.snapshot.phase !== 'land' || !this.pending) return;
@@ -358,7 +428,7 @@ export class Game {
     this.save.nextCatchId++;
     if (keep) this.save.inventory.push({ ...caught });
     else this.save.released++;
-    this.reset(keep ? 'Catch kept. Sell at the market when ready.' : 'Released gently. Your patience grows; no coins were awarded.');
+    this.reset(`${keep ? 'Catch kept. Sell at the market when ready.' : 'Released gently. Extra mastery earned; no coins were awarded.'} ${mastery(this.save).title} · mastery ${mastery(this.save).progress}/${mastery(this.save).goal}.`);
   }
   sell(species?: SpeciesId): number {
     if (species !== undefined && !['perch', 'trout', 'bass', 'pike', 'king'].includes(species)) return 0;

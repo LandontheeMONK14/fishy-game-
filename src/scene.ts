@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { Point, Quality, Save, Snapshot, SpeciesId } from './contracts';
+import { HOTSPOTS, bossUnlocked, hotspotAt, isWater } from './simulation';
 
 const TAU = Math.PI * 2;
 const UP = new THREE.Vector3(0, 1, 0);
@@ -96,6 +97,10 @@ export class LakeScene {
   private readonly aim = new THREE.Group();
   private readonly oars: THREE.Group[] = [];
   private readonly schools: THREE.Group[] = [];
+  private readonly feedingGrounds: THREE.Group[] = [];
+  private readonly fineDetail = new THREE.Group();
+  private readonly royalWake = new THREE.Group();
+  private readonly fishShadow = new THREE.Group();
   private readonly fishes = new Map<SpeciesId, THREE.Group>();
   private readonly trophies = new Map<SpeciesId, THREE.Group>();
   private readonly rings: Ring[] = [];
@@ -153,7 +158,7 @@ export class LakeScene {
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.13;
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.scene.fog = new THREE.FogExp2('#b2c1ad', 0.0035);
     this.scene.add(new THREE.HemisphereLight('#c2d6cf', '#6c6c43', 2.15));
     this.sun = new THREE.DirectionalLight('#ffdb9f', 3.3);
@@ -186,6 +191,7 @@ export class LakeScene {
     }
     this.scene.add(this.boat, this.float, this.fighter, this.trophy, this.aim);
     this.makeSchools();
+    this.makeFeedingGrounds();
     const ringGeometry = new THREE.RingGeometry(0.88, 1, 48);
     for (let i = 0; i < 28; i++) {
       const material = new THREE.MeshBasicMaterial({
@@ -271,6 +277,10 @@ export class LakeScene {
         effects: { value: 1 },
         boatPosition: { value: new THREE.Vector2(0, 30) },
         boatSpeed: { value: 0 },
+        boatHeading: { value: 0 },
+        fishPosition: { value: new THREE.Vector2() },
+        fishActivity: { value: 0 },
+        royal: { value: 0 },
       },
       transparent: true,
       depthWrite: false,
@@ -289,6 +299,10 @@ export class LakeScene {
         uniform float effects;
         uniform vec2 boatPosition;
         uniform float boatSpeed;
+        uniform float boatHeading;
+        uniform vec2 fishPosition;
+        uniform float fishActivity;
+        uniform float royal;
         varying vec3 vWorld;
         void main() {
           vec2 p = vWorld.xz;
@@ -304,21 +318,39 @@ export class LakeScene {
           float i1 = length((p - vec2(-46.0, -20.0)) / vec2(10.0, 8.0));
           float i2 = length((p - vec2(42.0, 24.0)) / vec2(12.0, 8.0));
           float shallow = max(smoothstep(0.79, 1.0, edge), max(1.0 - smoothstep(1.0, 1.6, i1), 1.0 - smoothstep(1.0, 1.5, i2)));
-          vec3 deep = vec3(0.035, 0.20, 0.21);
-          vec3 color = mix(deep, vec3(0.19, 0.36, 0.29), shallow * 0.8);
-          vec3 reflectedSky = mix(vec3(0.51, 0.65, 0.59), vec3(0.75, 0.64, 0.40), fresnel);
-          color = mix(color, reflectedSky, 0.18 + fresnel * 0.64);
+          vec3 deep = vec3(0.018, 0.115, 0.145);
+          vec3 color = mix(deep, vec3(0.19, 0.40, 0.32), shallow * 0.8);
+          vec3 reflectedSky = mix(vec3(0.20, 0.36, 0.33), vec3(0.43, 0.37, 0.23), fresnel);
+          color = mix(color, reflectedSky, 0.12 + fresnel * 0.48);
+          // Broken vertical forest reflections anchor the lake to its banks.
+          float reflectedTrees = sin(p.x * 0.43 + sin(p.x * 0.19) * 2.8 + gradient.x * 9.0);
+          reflectedTrees += sin(p.x * 1.47 + gradient.y * 13.0) * 0.28;
+          float bankReflection = smoothstep(0.45, 0.95, edge) * smoothstep(-0.6, 0.8, reflectedTrees);
+          color = mix(color, vec3(0.06, 0.15, 0.13), bankReflection * 0.38);
           vec3 lightDir = normalize(vec3(-0.4, 0.35, -0.9));
           vec3 halfDir = normalize(lightDir + viewDir);
           float spec = pow(max(dot(n, halfDir), 0.0), 150.0);
           float sparkle = pow(max(dot(n, halfDir), 0.0), 580.0);
-          color += vec3(1.0, 0.76, 0.38) * (spec * 0.55 + sparkle * 0.7) * effects;
+          color += vec3(1.0, 0.76, 0.38) * (spec * 0.30 + sparkle * 0.44) * effects;
           float ribbon = sin(p.y * 3.8 + sin(p.x * 1.1 + time) * 1.3 + time * 1.1);
-          color += vec3(0.09, 0.15, 0.11) * smoothstep(0.94, 1.0, ribbon) * 0.28;
+          float rippleBreak = smoothstep(-0.15, 0.65, sin(p.x * 0.73 + p.y * 0.24 + sin(p.y * 0.81)));
+          color += vec3(0.09, 0.15, 0.11) * smoothstep(0.94, 1.0, ribbon) * rippleBreak * 0.24;
           float foam = smoothstep(0.965, 0.999, edge) * (0.5 + sin(a * 2.0) * 0.3);
           foam += (1.0 - smoothstep(1.0, 1.07, min(i1, i2))) * 0.22;
-          float wake = exp(-length(p - boatPosition) * 0.7) * min(boatSpeed * 0.04, 0.22);
-          color += vec3(0.40, 0.43, 0.30) * (foam * 0.42 + wake);
+          vec2 relative = p - boatPosition;
+          vec2 stern = vec2(-sin(boatHeading), cos(boatHeading));
+          float aft = dot(relative, stern);
+          float lateral = abs(dot(relative, vec2(stern.y, -stern.x)));
+          float wakeEdge = exp(-pow((lateral - aft * 0.32) * 3.0, 2.0));
+          float wake = wakeEdge * smoothstep(0.5, 2.8, aft) * (1.0 - smoothstep(4.0, 13.0, aft));
+          wake *= min(boatSpeed * 0.065, 0.35) * (0.7 + 0.3 * sin(aft * 6.0 - time * 4.0));
+          color += vec3(0.55, 0.62, 0.48) * (foam * 0.42 + wake);
+          float fishDistance = length(p - fishPosition);
+          float pressure = sin(fishDistance * 5.0 - time * 3.0);
+          float fishWave = smoothstep(0.76, 1.0, pressure) * exp(-fishDistance * 0.25) * fishActivity;
+          color += mix(vec3(0.22, 0.40, 0.35), vec3(0.74, 0.43, 0.09), royal) * fishWave * 0.38;
+          float caustic = sin(p.x * 2.6 + sin(p.y * 2.0 + time * 0.35)) * sin(p.y * 2.8 - time * 0.3);
+          color += vec3(0.12, 0.20, 0.11) * smoothstep(0.72, 0.98, caustic) * shallow * effects * 0.28;
           float distanceFog = 1.0 - exp(-pow(length(cameraPosition - vWorld) * 0.0035, 2.0));
           color = mix(color, vec3(0.44, 0.52, 0.43), distanceFog);
           gl_FragColor = vec4(color, 0.965);
@@ -519,6 +551,74 @@ export class LakeScene {
       outcrop.scale.set(3 + rand() * 2, 4 + rand() * 6, 3 + rand() * 2);
       outcrop.rotation.set(rand(), rand(), rand() * 0.2);
     }
+    this.scene.add(this.fineDetail);
+    const needleMatrices: THREE.Matrix4[] = [];
+    for (let i = 0; i < 110; i++) {
+      const a = rand() * TAU;
+      const r = 1.15 + rand() * 0.6;
+      const x = Math.sin(a) * 85 * r, z = Math.cos(a) * 60 * r;
+      if (z > 60 && Math.abs(x) < 22) continue;
+      const h = 7 + rand() * 9;
+      for (let tier = 0; tier < 4; tier++) {
+        const width = (3.6 - tier * 0.68) * h / 12;
+        addMatrix(needleMatrices, x, 4 + h * (0.33 + tier * 0.2), z, width, h * 0.48, width, a);
+      }
+    }
+    instantiate(new THREE.ConeGeometry(1, 1, 7), surface('#254d45'), needleMatrices);
+
+    // Jagged snow shelves repeat the summit profile, not isolated white cones.
+    for (let ridge = 0; ridge < 2; ridge++) {
+      const positions: number[] = [], snow: number[] = [];
+      const z = -220 - ridge * 78;
+      for (let i = 0; i < 22; i++) {
+        const x = -260 + i * 25;
+        const h = 39 + ridge * 20 + Math.sin(i * 1.7 + ridge) * 17 + rand() * 21;
+        const nextH = 39 + ridge * 20 + Math.sin((i + 1) * 1.7 + ridge) * 17 + rand() * 21;
+        positions.push(x, -3, z, x, h, z, x + 25, nextH, z, x, -3, z, x + 25, nextH, z, x + 25, -3, z);
+        snow.push(x, h, z + 0.1, x + 25, nextH, z + 0.1, x + 18, nextH - 9, z + 0.1,
+          x, h, z + 0.1, x + 18, nextH - 9, z + 0.1, x + 7, h - 7, z + 0.1);
+      }
+      for (const [vertices, color] of [[positions, ridge ? '#8ba2a3' : '#617f82'], [snow, ridge ? '#d0d4c4' : '#b9c9c0']] as const) {
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+        geometry.computeVertexNormals();
+        const silhouette = mesh(geometry, new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide }), this.scene);
+        silhouette.castShadow = silhouette.receiveShadow = false;
+      }
+    }
+    const mist = new THREE.ShaderMaterial({
+      transparent: true, depthWrite: false, side: THREE.DoubleSide,
+      vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+      fragmentShader: `varying vec2 vUv; void main() {
+        float veil = pow(sin(vUv.y * 3.14159), 2.0) * pow(sin(vUv.x * 3.14159), 0.5);
+        gl_FragColor = vec4(0.68, 0.76, 0.68, veil * 0.19);
+        #include <colorspace_fragment>
+      }`,
+    });
+    for (let i = 0; i < 3; i++) {
+      const veil = mesh(new THREE.PlaneGeometry(230 + i * 45, 9 + i * 3), mist, this.fineDetail, -18 + i * 13, 8 + i * 4, -79 - i * 33);
+      veil.castShadow = veil.receiveShadow = false;
+    }
+    const padMaterial = surface('#527654', 0.57);
+    const padGeometry = new THREE.CircleGeometry(1, 14, 0.17, TAU - 0.34);
+    padGeometry.rotateX(-Math.PI / 2);
+    for (let i = 0; i < 48; i++) {
+      const x = -64 + rand() * 12, z = -1 + rand() * 25;
+      if (!isWater({ x, z })) continue;
+      const pad = mesh(padGeometry, padMaterial, this.fineDetail, x, 0.075 + i % 3 * 0.005, z);
+      pad.scale.setScalar(0.24 + rand() * 0.40);
+      pad.rotation.y = rand() * TAU;
+      if (i % 7 === 0) {
+        const flower = mesh(new THREE.ConeGeometry(0.14, 0.22, 7), surface('#d9bd83'), this.fineDetail, x, 0.2, z);
+        flower.rotation.z = 0.2;
+      }
+    }
+    const fallen = new THREE.Group();
+    fallen.position.set(-73, 0.65, 5);
+    fallen.rotation.y = 0.7;
+    beam(fallen, bark, new THREE.Vector3(-5, 0, 0), new THREE.Vector3(4, 0.6, 0), 0.46);
+    for (let i = 0; i < 4; i++) beam(fallen, bark, new THREE.Vector3(-2 + i * 1.5, 0.2, 0), new THREE.Vector3(-3 + i * 1.8, 1.2, i % 2 ? 1.6 : -1.1), 0.09);
+    this.fineDetail.add(fallen);
   }
 
   private makeDock(): void {
@@ -739,7 +839,7 @@ export class LakeScene {
     mesh(new THREE.SphereGeometry(0.11, 12, 8), white, this.float, 0, 0.05, 0).scale.y = 1.3;
     mesh(new THREE.SphereGeometry(0.09, 12, 8), red, this.float, 0, 0.14, 0);
     mesh(new THREE.CylinderGeometry(0.017, 0.017, 0.38, 5), red, this.float, 0, 0.30, 0);
-    const ring = mesh(new THREE.RingGeometry(0.7, 0.75, 56), new THREE.MeshBasicMaterial({ color: '#dfd4a3', transparent: true, opacity: 0.7, side: THREE.DoubleSide, depthWrite: false }), this.aim);
+    const ring = mesh(new THREE.RingGeometry(0.7, 0.81, 56), new THREE.MeshBasicMaterial({ color: '#dfd4a3', transparent: true, opacity: 0.7, side: THREE.DoubleSide, depthWrite: false }), this.aim);
     ring.rotation.x = -Math.PI / 2;
     ring.castShadow = false;
     for (let i = 0; i < 4; i++) {
@@ -756,29 +856,83 @@ export class LakeScene {
       trout: { color: '#7aa39a', belly: '#d2d7b8', fin: '#839a86', length: 1.85, width: 0.28, height: 0.34 },
       bass: { color: '#668652', belly: '#c9c58b', fin: '#687e42', length: 1.8, width: 0.36, height: 0.48 },
       pike: { color: '#879865', belly: '#c5cba0', fin: '#8f9660', length: 2.65, width: 0.24, height: 0.32 },
-      king: { color: '#bda052', belly: '#ead399', fin: '#a87b37', length: 2.35, width: 0.40, height: 0.56 },
+      king: { color: '#e6b643', belly: '#fff0ba', fin: '#c98527', length: 2.85, width: 0.46, height: 0.66 },
     }[species];
     const skin = surface(config.color, 0.4);
-    skin.metalness = 0.15;
+    skin.metalness = species === 'king' ? 0.66 : 0.24;
     const belly = surface(config.belly, 0.48);
     const fins = surface(config.fin, 0.7);
     fins.side = THREE.DoubleSide;
     const bodyGeometry = new THREE.SphereGeometry(1, 20, 12);
-    const body = mesh(bodyGeometry, skin, group);
-    body.scale.set(config.width, config.height, config.length * 0.48);
+    const positions: number[] = [], indices: number[] = [], colors: number[] = [];
+    const baseColor = new THREE.Color(config.color);
+    const bellyColor = new THREE.Color(config.belly);
+    const tint = new THREE.Color();
+    const profile = [0.15, 0.56, 0.85, 0.99, 1, 0.94, 0.78, 0.55, 0.30, 0.14, 0.11];
+    for (let ring = 0; ring < profile.length; ring++) {
+      const z = (ring / (profile.length - 1) - 0.5) * config.length;
+      for (let side = 0; side <= 24; side++) {
+        const a = side / 24 * TAU;
+        positions.push(Math.cos(a) * config.width * profile[ring],
+          Math.sin(a) * config.height * profile[ring] + Math.sin(ring / 10 * Math.PI) * 0.025, z);
+        tint.copy(baseColor).lerp(bellyColor, Math.max(0, -Math.sin(a)) * 0.85);
+        tint.multiplyScalar(0.72 + (Math.sin(a) + 1) * 0.17);
+        colors.push(tint.r, tint.g, tint.b);
+        if (ring < profile.length - 1 && side < 24) {
+          const v = ring * 25 + side;
+          indices.push(v, v + 1, v + 25, v + 1, v + 26, v + 25);
+        }
+      }
+    }
+    const spindle = new THREE.BufferGeometry();
+    spindle.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    spindle.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+    spindle.setIndex(indices);
+    spindle.computeVertexNormals();
+    const bodySkin = skin.clone();
+    bodySkin.color.set('#ffffff');
+    bodySkin.vertexColors = true;
+    mesh(spindle, bodySkin, group);
     const lower = mesh(bodyGeometry, belly, group, 0, -config.height * 0.45, 0);
     lower.scale.set(config.width * 0.88, config.height * 0.5, config.length * 0.40);
     const nose = mesh(bodyGeometry, skin, group, 0, -0.01, -config.length * 0.41);
     nose.scale.set(config.width * (species === 'bass' ? 0.8 : 0.58), config.height * 0.56, species === 'pike' ? 0.36 : 0.22);
-    const fin = (vertices: number[], material: THREE.Material) => {
+    const fin = (vertices: number[], material: THREE.Material, parent: THREE.Object3D = group) => {
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
       geometry.computeVertexNormals();
-      return mesh(geometry, material, group);
+      return mesh(geometry, material, parent);
     };
     const tailZ = config.length * 0.49;
-    fin([0, 0, tailZ - 0.2, 0, 0.46, tailZ + 0.48, 0, 0.04, tailZ + 0.29,
-      0, 0, tailZ - 0.2, 0, 0.04, tailZ + 0.29, 0, -0.43, tailZ + 0.46], fins);
+    const tail = new THREE.Group();
+    tail.name = 'tail';
+    tail.position.z = tailZ - 0.14;
+    group.add(tail);
+    const royal = species === 'king';
+    const edgeMaterial = new THREE.LineBasicMaterial({ color: royal ? '#ffe4a0' : config.belly, transparent: true, opacity: 0.65 });
+    const membrane = (parent: THREE.Object3D, root: THREE.Vector3, outer: THREE.Vector3[], material: THREE.Material) => {
+      const vertices: number[] = [], ribs: number[] = [];
+      for (let i = 0; i < outer.length - 1; i++) {
+        vertices.push(root.x, root.y, root.z, outer[i].x, outer[i].y, outer[i].z, outer[i + 1].x, outer[i + 1].y, outer[i + 1].z);
+      }
+      fin(vertices, material, parent);
+      outer.forEach((point, i) => {
+        ribs.push(root.x, root.y, root.z, point.x, point.y, point.z);
+        if (i) ribs.push(outer[i - 1].x, outer[i - 1].y, outer[i - 1].z, point.x, point.y, point.z);
+      });
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.Float32BufferAttribute(ribs, 3));
+      parent.add(new THREE.LineSegments(geometry, edgeMaterial));
+    };
+    const tailEdge: THREE.Vector3[] = [];
+    for (let i = 0; i <= 16; i++) {
+      const t = i / 16;
+      const spread = (t - 0.5) * (royal ? 2.35 : species === 'pike' ? 1.0 : 1.18);
+      const fork = Math.pow(Math.abs(t - 0.5) * 2, 1.2);
+      tailEdge.push(new THREE.Vector3(Math.sin(t * Math.PI * 3) * (royal ? 0.13 : 0.025), spread,
+        (royal ? 0.96 : 0.45) + fork * (royal ? 1.10 : 0.38) + Math.sin(t * Math.PI * 8) * (royal ? 0.10 : 0.025)));
+    }
+    membrane(tail, new THREE.Vector3(0, 0, 0), tailEdge, fins);
     const dorsalZ = species === 'pike' ? 0.6 : 0;
     fin([0, config.height * 0.8, dorsalZ - 0.4, 0, config.height + (species === 'perch' ? 0.43 : 0.26), dorsalZ + 0.04,
       0, config.height * 0.73, dorsalZ + 0.50], fins);
@@ -811,19 +965,75 @@ export class LakeScene {
         }
       }
     }
+    if (royal) {
+      const gold = new THREE.MeshStandardMaterial({ color: '#ffe09a', metalness: 0.82, roughness: 0.26, emissive: '#b86b0a', emissiveIntensity: 0.10 });
+      const jewel = new THREE.MeshStandardMaterial({ color: '#47bfb2', metalness: 0.45, roughness: 0.22, emissive: '#17463b', emissiveIntensity: 0.25 });
+      const crown = new THREE.Group();
+      crown.position.set(0, config.height * 0.73, -0.62);
+      crown.rotation.x = -0.10;
+      group.add(crown);
+      const band = mesh(new THREE.TorusGeometry(0.29, 0.055, 7, 24), gold, crown);
+      band.rotation.x = Math.PI / 2;
+      for (let i = 0; i < 5; i++) {
+        const a = i / 5 * TAU;
+        const h = i === 0 ? 0.53 : 0.40;
+        const x = Math.sin(a) * 0.28, z = Math.cos(a) * 0.28;
+        const point = mesh(new THREE.ConeGeometry(0.11, h, 4), gold, crown, x, h * 0.45, z);
+        point.rotation.z = -Math.sin(a) * 0.18;
+        mesh(new THREE.IcosahedronGeometry(0.065, 0), jewel, crown, x * 1.1, h * 0.94, z * 1.1);
+      }
+      for (const side of [-1, 1]) {
+        const wing = new THREE.Group();
+        wing.name = side === -1 ? 'finLeft' : 'finRight';
+        group.add(wing);
+        const edge: THREE.Vector3[] = [];
+        for (let i = 0; i <= 12; i++) {
+          const t = i / 12;
+          edge.push(new THREE.Vector3(side * (config.width + Math.sin(t * Math.PI) * 0.68),
+            -0.22 - Math.sin(t * Math.PI) * 0.48, -0.2 + t * 2.75 + Math.sin(t * Math.PI * 6) * 0.08));
+        }
+        membrane(wing, new THREE.Vector3(side * config.width * 0.7, -0.12, -0.38), edge, fins);
+      }
+      const dorsalEdge: THREE.Vector3[] = [];
+      for (let i = 0; i <= 14; i++) {
+        const t = i / 14;
+        dorsalEdge.push(new THREE.Vector3(0, config.height * 0.7 + Math.sin(t * Math.PI) * 0.65 + (i % 2 ? 0.08 : 0.23), -0.35 + t * 1.85));
+      }
+      membrane(group, new THREE.Vector3(0, 0.35, 0.5), dorsalEdge, fins);
+      const scaleGeometry = new THREE.SphereGeometry(1, 6, 4);
+      const scales = new THREE.InstancedMesh(scaleGeometry, gold, 96);
+      const stamp = new THREE.Object3D();
+      for (let i = 0; i < 96; i++) {
+        const side = i < 48 ? -1 : 1;
+        const col = i % 12, row = Math.floor(i % 48 / 12);
+        const z = -0.78 + col * 0.14 + row % 2 * 0.065;
+        const y = -0.26 + row * 0.16;
+        const fullness = Math.sqrt(Math.max(0.1, 1 - (z / 1.4) ** 2 - (y / 0.72) ** 2));
+        stamp.position.set(side * config.width * fullness, y, z);
+        stamp.scale.set(0.023, 0.065, 0.085);
+        stamp.rotation.x = -0.28;
+        stamp.updateMatrix();
+        scales.setMatrixAt(i, stamp.matrix);
+      }
+      group.add(scales);
+    }
     return group;
   }
 
   private makeSchools(): void {
-    const material = new THREE.MeshBasicMaterial({ color: '#335e50', transparent: true, opacity: 0.45, depthWrite: false });
+    const material = new THREE.MeshBasicMaterial({ color: '#b1cbb2', transparent: true, opacity: 0.20, depthWrite: false });
     const body = new THREE.SphereGeometry(1, 8, 5);
     for (let i = 0; i < 22; i++) {
       const group = new THREE.Group();
       const fish = mesh(body, material, group);
       fish.scale.set(0.13, 0.07, 0.48);
+      fish.renderOrder = 2;
+      fish.castShadow = false;
       const tail = mesh(new THREE.ConeGeometry(0.18, 0.30, 3), material, group, 0, 0, 0.5);
       tail.rotation.x = Math.PI / 2;
       tail.scale.z = 0.3;
+      tail.renderOrder = 2;
+      tail.castShadow = false;
       group.position.y = -0.09;
       this.schools.push(group);
       this.scene.add(group);
@@ -838,6 +1048,87 @@ export class LakeScene {
       bird.position.set(x, y, z);
       this.scene.add(bird);
     }
+  }
+
+  private makeFeedingGrounds(): void {
+    const fishShape = new THREE.Shape();
+    fishShape.moveTo(0, -0.85);
+    fishShape.bezierCurveTo(0.35, -0.43, 0.35, 0.14, 0.08, 0.52);
+    fishShape.lineTo(0.30, 0.85);
+    fishShape.lineTo(0, 0.70);
+    fishShape.lineTo(-0.30, 0.85);
+    fishShape.lineTo(-0.08, 0.52);
+    fishShape.bezierCurveTo(-0.35, 0.14, -0.35, -0.43, 0, -0.85);
+    const silhouette = new THREE.ShapeGeometry(fishShape, 12);
+    silhouette.rotateX(-Math.PI / 2);
+    const shadow = mesh(silhouette, new THREE.MeshBasicMaterial({ color: '#a8d2be', transparent: true, opacity: 0.34, depthWrite: false, side: THREE.DoubleSide }), this.fishShadow);
+    shadow.castShadow = shadow.receiveShadow = false;
+    shadow.renderOrder = 2;
+    this.scene.add(this.fishShadow);
+    HOTSPOTS.forEach((spot, index) => {
+      const ground = new THREE.Group();
+      ground.position.set(spot.x, 0.095, spot.z);
+      const color = spot.species === 'king' ? '#eac06a' : '#a4cec1';
+      for (let i = 0; i < 3; i++) {
+        const material = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.30, side: THREE.DoubleSide, depthWrite: false });
+        const arc = mesh(new THREE.RingGeometry(0.97, 1, 56, 1, i * TAU / 3, TAU * 0.22), material, ground);
+        arc.rotation.x = -Math.PI / 2;
+        arc.scale.setScalar(spot.radius * 0.72);
+        arc.castShadow = arc.receiveShadow = false;
+        arc.renderOrder = 3;
+      }
+      for (let i = 0; i < 3; i++) {
+        const fish = mesh(silhouette, new THREE.MeshBasicMaterial({ color: spot.species === 'king' ? '#deb460' : '#9ac6af', transparent: true, opacity: 0.38, depthWrite: false, side: THREE.DoubleSide }), ground);
+        fish.name = 'activity';
+        fish.position.set(Math.sin(i * 2.1 + index) * spot.radius * 0.34, 0.006 + i * 0.002, Math.cos(i * 2.1 + index) * spot.radius * 0.34);
+        fish.scale.setScalar(spot.species === 'king' ? 1.35 : 0.72);
+        fish.castShadow = fish.receiveShadow = false;
+        fish.renderOrder = 3;
+      }
+      if (spot.species === 'king') {
+        const crest = new THREE.Shape();
+        crest.moveTo(-1, -0.5);
+        crest.lineTo(-1.25, 0.75);
+        crest.lineTo(-0.5, 0.15);
+        crest.lineTo(0, 1.05);
+        crest.lineTo(0.5, 0.15);
+        crest.lineTo(1.25, 0.75);
+        crest.lineTo(1, -0.5);
+        crest.closePath();
+        const geometry = new THREE.ShapeGeometry(crest);
+        geometry.rotateX(-Math.PI / 2);
+        const crown = mesh(geometry, new THREE.MeshBasicMaterial({ color: '#eaca83', side: THREE.DoubleSide, transparent: true, opacity: 0.5, depthWrite: false }), ground, 0, 0.02, 0);
+        crown.name = 'crest';
+        crown.renderOrder = 3;
+        crown.castShadow = crown.receiveShadow = false;
+      }
+      this.feedingGrounds.push(ground);
+      this.scene.add(ground);
+    });
+    const gold = new THREE.MeshBasicMaterial({ color: '#ffe0a0', transparent: true, opacity: 0.85, side: THREE.DoubleSide, depthWrite: false });
+    const inner = mesh(new THREE.RingGeometry(0.47, 0.54, 48), gold, this.aim);
+    inner.name = 'precision';
+    inner.rotation.x = -Math.PI / 2;
+    inner.castShadow = false;
+    for (let i = 0; i < 4; i++) {
+      const diamond = mesh(new THREE.OctahedronGeometry(0.12, 0), gold, this.aim, Math.sin(i * Math.PI / 2) * 1.35, 0.04, Math.cos(i * Math.PI / 2) * 1.35);
+      diamond.name = 'precision';
+      diamond.scale.y = 0.25;
+      diamond.castShadow = false;
+    }
+    for (let i = 0; i < 3; i++) {
+      const material = new THREE.MeshBasicMaterial({ color: '#e3bc6d', transparent: true, opacity: 0.3, side: THREE.DoubleSide, depthWrite: false });
+      const crest = mesh(new THREE.RingGeometry(0.97, 1, 64, 1, i * 0.7, TAU * 0.78), material, this.royalWake);
+      crest.rotation.x = -Math.PI / 2;
+      crest.scale.setScalar(1.5 + i * 0.7);
+      crest.castShadow = false;
+      crest.renderOrder = 3;
+    }
+    const direction = mesh(new THREE.ConeGeometry(0.3, 1.2, 3), gold, this.royalWake, 0, 0.03, -3.1);
+    direction.rotation.x = -Math.PI / 2;
+    direction.castShadow = false;
+    direction.renderOrder = 3;
+    this.scene.add(this.royalWake);
   }
 
   private ripple(x: number, z: number, size: number, duration = 2.4): void {
@@ -867,13 +1158,20 @@ export class LakeScene {
 
   update(snapshot: Snapshot, save: Save, dt: number): void {
     if (this.disposed || this.lost) return;
-    const step = Math.min(Math.max(dt, 0), 0.05);
-    const moving = !save.settings.reducedMotion && !snapshot.paused;
+    const step = snapshot.paused ? 0 : Math.min(Math.max(dt, 0), 0.05);
+    const motion = !save.settings.reducedMotion;
+    const moving = motion && !snapshot.paused;
     if (moving) this.elapsed += step;
     const time = this.elapsed;
     this.water.uniforms.time.value = time;
     this.water.uniforms.boatPosition.value.set(snapshot.boat.x, snapshot.boat.z);
     this.water.uniforms.boatSpeed.value = Math.abs(snapshot.boat.speed);
+    this.water.uniforms.boatHeading.value = snapshot.boat.yaw;
+    this.water.uniforms.fishPosition.value.set(snapshot.fish.x, snapshot.fish.z);
+    const kingFight = snapshot.phase === 'fight' && snapshot.fish.species === 'king';
+    const telling = snapshot.phase === 'fight' && snapshot.behavior === 'tell';
+    this.water.uniforms.fishActivity.value = snapshot.phase === 'fight' ? telling ? 1 : snapshot.behavior === 'run' ? 0.7 : 0.25 : 0;
+    this.water.uniforms.royal.value = kingFight ? 1 : 0;
     if (this.quality !== save.settings.quality) this.setQuality(save.settings.quality);
     if (this.paint !== save.paint) {
       this.paint = save.paint;
@@ -884,8 +1182,8 @@ export class LakeScene {
       };
       this.hullPaint.color.set(paints[save.paint] ?? (/^#[0-9a-f]{6}$/i.test(save.paint) ? save.paint : '#476f68'));
     }
-    this.boat.position.set(snapshot.boat.x, 0.05 + (moving ? Math.sin(time * 1.45) * 0.035 : 0), snapshot.boat.z);
-    this.boat.rotation.set(moving ? Math.sin(time * 1.15) * 0.009 : 0, -snapshot.boat.yaw, moving ? Math.sin(time * 1.6) * 0.014 : 0);
+    this.boat.position.set(snapshot.boat.x, 0.05 + (motion ? Math.sin(time * 1.45) * 0.035 : 0), snapshot.boat.z);
+    this.boat.rotation.set(motion ? Math.sin(time * 1.15) * 0.009 : 0, -snapshot.boat.yaw, motion ? Math.sin(time * 1.6) * 0.014 : 0);
     const rowing = Math.min(Math.abs(snapshot.boat.speed) / 5, 1);
     this.oars.forEach((oar, index) => {
       const side = index === 0 ? -1 : 1;
@@ -896,12 +1194,18 @@ export class LakeScene {
     const aiming = snapshot.phase === 'aim' || snapshot.phase === 'charge';
     this.aim.visible = aiming;
     this.aim.position.set(snapshot.target.x, 0.11, snapshot.target.z);
-    this.aim.scale.setScalar(1 + (moving ? Math.sin(time * 2) * 0.04 : 0));
-    const aimMaterial = (this.aim.children[0] as THREE.Mesh).material as THREE.MeshBasicMaterial;
-    aimMaterial.color.set(snapshot.legalTarget ? '#e2d9af' : '#c77455');
+    const spot = hotspotAt(snapshot.target);
+    const precision = snapshot.precision && !!spot && (spot.species !== 'king' || bossUnlocked(save));
+    this.aim.scale.setScalar((precision ? 1.45 : 1.25) + (motion ? Math.sin(time * 2) * 0.025 : 0));
+    this.aim.children.forEach(object => {
+      if (object.name === 'precision') object.visible = precision;
+      const material = (object as THREE.Mesh).material as THREE.MeshBasicMaterial;
+      material.color.set(snapshot.legalTarget ? precision ? '#ffcf64' : '#dce6ca' : '#d18168');
+      material.opacity = precision ? 0.95 : 0.65;
+    });
     this.float.visible = fishing;
-    this.float.position.set(snapshot.float.x, Math.max(-0.16, snapshot.float.y) + (moving ? Math.sin(time * 3) * 0.025 : 0), snapshot.float.z);
-    this.float.rotation.z = snapshot.phase === 'bite' ? Math.sin(time * 16) * 0.4 : Math.sin(time * 2) * 0.08;
+    this.float.position.set(snapshot.float.x, Math.max(-0.16, snapshot.float.y) + (motion ? Math.sin(time * 3) * 0.025 : 0), snapshot.float.z);
+    this.float.rotation.z = motion ? snapshot.phase === 'bite' ? Math.sin(time * 16) * 0.4 : Math.sin(time * 2) * 0.08 : 0;
     const tension = snapshot.phase === 'fight' ? snapshot.tension : 0;
     const cast = snapshot.phase === 'charge' ? snapshot.charge : snapshot.phase === 'cast' ? 0.25 : 0;
     this.rod.rotation.y = THREE.MathUtils.clamp(snapshot.boat.yaw - snapshot.aimYaw, -1.25, 1.25);
@@ -909,7 +1213,7 @@ export class LakeScene {
     for (let i = 0; i < 19; i++) {
       const t = i / 18;
       const bend = tension * t * t;
-      this.rodPositions[i * 3] = Math.sin(time * 9) * bend * (moving ? 0.06 : 0);
+      this.rodPositions[i * 3] = Math.sin(time * 9) * bend * (motion ? 0.06 : 0);
       this.rodPositions[i * 3 + 1] = 0.5 + t * 1.85 - bend * 1.25;
       this.rodPositions[i * 3 + 2] = -0.1 - t * 3.15;
     }
@@ -949,18 +1253,69 @@ export class LakeScene {
     const showFish = snapshot.phase === 'fight';
     this.fighter.visible = showFish;
     this.fighter.position.set(snapshot.fish.x, snapshot.fish.y, snapshot.fish.z);
-    this.fighter.rotation.set(0, -snapshot.fish.heading, snapshot.behavior === 'jump' ? Math.sin(time * 7) * 0.3 : 0);
+    this.fighter.rotation.set(0, -snapshot.fish.heading, motion && snapshot.behavior === 'jump' ? Math.sin(time * 7) * 0.3 : 0);
+    this.fighter.scale.setScalar(kingFight ? 1.18 : 1);
     for (const [species, fish] of this.fishes) fish.visible = species === snapshot.fish.species;
     this.trophy.visible = snapshot.phase === 'land' && snapshot.catch !== null;
     for (const [species, fish] of this.trophies) fish.visible = species === snapshot.catch?.species;
     const yaw = -snapshot.boat.yaw;
     this.trophy.position.set(snapshot.boat.x - Math.sin(yaw) * 2.4, 2.7, snapshot.boat.z - Math.cos(yaw) * 2.4);
-    this.trophy.rotation.set(0, yaw + Math.PI / 2 + (moving ? Math.sin(time * 0.7) * 0.15 : 0), -0.08);
+    this.trophy.rotation.set(0, yaw + Math.PI / 2 + (motion ? Math.sin(time * 0.7) * 0.15 : 0), -0.08);
     this.trophy.scale.setScalar(1.5);
+    for (const model of [...this.fishes.values(), ...this.trophies.values()]) {
+      if (!model.visible) continue;
+      const tail = model.getObjectByName('tail');
+      if (tail) tail.rotation.y = motion ? Math.sin(time * (telling ? 8 : snapshot.behavior === 'run' ? 10 : 3.8)) * (telling ? 0.12 : 0.20) : 0;
+      for (const name of ['finLeft', 'finRight']) {
+        const fin = model.getObjectByName(name);
+        if (fin) fin.rotation.z = motion ? Math.sin(time * 2.4 + (name === 'finLeft' ? 0 : 2)) * 0.08 : 0;
+      }
+    }
+    this.fishShadow.visible = showFish && snapshot.fish.y < 0.1;
+    this.fishShadow.position.set(snapshot.fish.x, 0.088, snapshot.fish.z);
+    this.fishShadow.rotation.y = -snapshot.fish.heading;
+    this.fishShadow.scale.set(kingFight ? 1.6 : 0.8, 1, kingFight ? 2.1 : snapshot.fish.species === 'pike' ? 1.5 : 1.05);
+    const shadowMaterial = (this.fishShadow.children[0] as THREE.Mesh).material as THREE.MeshBasicMaterial;
+    shadowMaterial.color.set(kingFight ? '#ecc875' : '#b2d5ba');
+    this.royalWake.visible = showFish && (kingFight || telling);
+    this.royalWake.position.set(snapshot.fish.x, 0.105, snapshot.fish.z);
+    this.royalWake.rotation.y = -snapshot.fish.heading - snapshot.runDirection * 0.8;
+    this.royalWake.children.forEach((object, index) => {
+      object.visible = index === 3 ? telling : index < (kingFight ? snapshot.bossPhase : 1);
+      if (index < 3) {
+        const material = (object as THREE.Mesh).material as THREE.MeshBasicMaterial;
+        material.color.set(telling ? '#ffda87' : kingFight ? ['#e4be70', '#f4a65c', '#fff0bb'][snapshot.bossPhase - 1] ?? '#e4be70' : '#b5d9c6');
+        material.opacity = telling ? 0.48 : 0.23;
+        const scale = 1.5 + index * 0.7 + (telling ? 1 - Math.min(snapshot.surgeIn, 1) : 0);
+        object.scale.setScalar(scale);
+      }
+    });
+    const unlocked = bossUnlocked(save);
+    this.feedingGrounds.forEach((ground, index) => {
+      const hot = HOTSPOTS[index];
+      ground.visible = hot.species !== 'king' || unlocked;
+      const matched = hot.lure === snapshot.lure;
+      for (let i = 0; i < ground.children.length; i++) {
+        const object = ground.children[i] as THREE.Mesh;
+        const material = object.material as THREE.MeshBasicMaterial;
+        if (object.name === 'activity') {
+          const a = time * (hot.species === 'king' ? 0.13 : 0.25) + i * 2.1 + index;
+          object.position.x = Math.sin(a) * hot.radius * 0.34;
+          object.position.z = Math.cos(a) * hot.radius * 0.34;
+          object.rotation.y = Math.PI / 2 + a;
+          object.visible = this.quality !== 'low' || i === 3;
+        } else if (object.name !== 'crest') {
+          const swell = 0.72 + (motion ? Math.sin(time * 0.7 + i * 2.1) * 0.05 : 0);
+          object.scale.setScalar(hot.radius * swell);
+          material.opacity = matched ? 0.40 : 0.22;
+          material.color.set(matched ? '#e9ca86' : hot.species === 'king' ? '#bfab78' : '#a0cbbd');
+        }
+      }
+    });
 
     if (snapshot.phase !== this.previousPhase) {
-      if (snapshot.phase === 'wait' || snapshot.phase === 'bite') this.splash(snapshot.float.x, snapshot.float.z, moving ? 14 : 0);
-      if (snapshot.phase === 'land') this.splash(snapshot.boat.x, snapshot.boat.z - 2, moving ? 24 : 0);
+      if (moving && (snapshot.phase === 'wait' || snapshot.phase === 'bite')) this.splash(snapshot.float.x, snapshot.float.z, 14);
+      if (moving && snapshot.phase === 'land') this.splash(snapshot.boat.x, snapshot.boat.z - 2, 24);
       this.previousPhase = snapshot.phase;
     }
     if (moving) this.effectClock += step;
@@ -975,7 +1330,7 @@ export class LakeScene {
     for (const ring of this.rings) {
       if (moving) ring.age += step;
       const t = ring.age / ring.duration;
-      ring.mesh.visible = t < 1 && this.quality !== 'low';
+      ring.mesh.visible = t < 1 && !save.settings.reducedMotion && (this.quality !== 'low' || this.rings.indexOf(ring) < 10);
       ring.mesh.scale.setScalar((0.1 + t * ring.size));
       ring.mesh.material.opacity = Math.max(0, (1 - t) * 0.32);
     }
@@ -997,17 +1352,18 @@ export class LakeScene {
     this.particles.visible = this.quality !== 'low' && !save.settings.reducedMotion;
     for (let i = 0; i < this.schools.length; i++) {
       const fish = this.schools[i];
-      const centerX = i < 11 ? -31 : 29;
-      const centerZ = i < 11 ? 13 : -16;
+      const centerX = i < 11 ? -12 : 19;
+      const centerZ = i < 11 ? 11 : -10;
       const a = time * 0.11 + i * 0.62;
-      fish.position.set(centerX + Math.sin(a) * (4 + i % 4), -0.09, centerZ + Math.cos(a) * (3 + i % 3));
+      fish.position.set(centerX + Math.sin(a) * (4 + i % 4), 0.078, centerZ + Math.cos(a) * (3 + i % 3));
       fish.rotation.y = Math.PI / 2 - a;
-      fish.visible = this.quality !== 'low';
+      fish.visible = this.quality !== 'low' || i < 6;
     }
 
     const cameraYaw = yaw + this.orbitYaw;
-    const distance = 17.5;
-    const height = 10.8 + this.orbitPitch * 11;
+    const cinematic = !save.settings.reducedMotion;
+    const distance = cinematic && snapshot.phase === 'land' ? 14.8 : cinematic && kingFight ? 19.5 : 17.5;
+    const height = (cinematic && snapshot.phase === 'land' ? 9.4 : cinematic && kingFight ? 12.2 : 10.8) + this.orbitPitch * 11;
     this.cameraGoal.set(
       snapshot.boat.x + Math.sin(cameraYaw) * distance + Math.cos(cameraYaw) * 3.3,
       height,
@@ -1023,11 +1379,14 @@ export class LakeScene {
     for (const island of CAMERA_ISLANDS) {
       if (Math.hypot((this.cameraGoal.x - island.x) / island.rx, (this.cameraGoal.z - island.z) / island.rz) < 1.2) this.cameraGoal.y = Math.max(this.cameraGoal.y, 17);
     }
-    this.lookGoal.set(snapshot.boat.x - Math.sin(cameraYaw) * 8, 0.4, snapshot.boat.z - Math.cos(cameraYaw) * 8);
+    this.lookGoal.set(snapshot.boat.x - Math.sin(cameraYaw) * 8, 4.5, snapshot.boat.z - Math.cos(cameraYaw) * 8);
     if (snapshot.phase === 'land') {
-      this.lookGoal.lerp(this.trophy.position, 0.35);
+      if (cinematic) this.lookGoal.lerp(this.trophy.position, 0.45);
+    } else if (showFish && cinematic) {
+      this.p.set(snapshot.fish.x, 0.4, snapshot.fish.z);
+      this.lookGoal.lerp(this.p, Math.min(0.24, snapshot.distance / 160));
     }
-    const smoothing = save.settings.reducedMotion ? 1 : 1 - Math.exp(-step * 4);
+    const smoothing = snapshot.paused ? 0 : save.settings.reducedMotion ? 1 : 1 - Math.exp(-step * 3);
     if (!this.cameraReady) {
       this.camera.position.copy(this.cameraGoal);
       this.look.copy(this.lookGoal);
@@ -1065,6 +1424,7 @@ export class LakeScene {
       this.sun.shadow.map = null;
     }
     this.water.uniforms.effects.value = quality === 'low' ? 0.3 : quality === 'medium' ? 0.7 : 1;
+    this.fineDetail.visible = quality !== 'low';
     this.resize();
   }
 
@@ -1102,6 +1462,7 @@ export class LakeScene {
     const materials = new Set<THREE.Material>();
     const textures = new Set<THREE.Texture>();
     this.scene.traverse((object) => {
+      if (object instanceof THREE.InstancedMesh) object.dispose();
       const drawable = object as THREE.Mesh;
       if (drawable.geometry) geometries.add(drawable.geometry);
       if (drawable.material) {

@@ -33,11 +33,14 @@ settings are enabled by this project.
 ## A quiet first cast
 
 1. Start at the dock. Drag the view to aim; hold **Space / Cast** to charge,
-   release to cast. The target preview indicates legal water.
+   release to cast. Aim into the nearby **Emerald pool** surface rings with a
+   spinner. A gold precision target means the habitat and lure match: faster
+   bites and a size bonus. Ordinary legal-water casts still catch fish.
 2. Watch the float. Nibbles are not bites: wait for the **set hook** prompt and
    press Space / Hook within the bite window.
-3. Hold Space / Reel during rests. Release it or use **R / Give line** during
-   surges; watch tension, stamina and distance. A/D steer the rod during a fight.
+3. Hold Space / Reel during rests and the **building** tell. The countdown warns
+   before a run or leap: release Reel or use **R / Give line** when it starts;
+   watch tension, stamina and distance. A/D steer in the indicated fish direction.
    Assist is enabled initially and can be changed in Settings.
 4. Inspect your catch, then explicitly **keep** or **release** it. Keeping fills
    a finite hold; release builds stewardship progress rather than giving cash.
@@ -55,10 +58,30 @@ fishing timers. Buttons and dialogs are keyboard accessible; game shortcuts are
 ignored while using form controls. Settings include quality, reduced motion,
 assisted fights, and opt-in sound with volume.
 
-Different water and lures attract different species. The journal provides habitat
-hints. Discover the four ordinary species to unlock the Gilded King; use a minnow
-in the far northern water. Its three-stage fight is retryable without spending
-the unlock. Give line during surges and gain distance during recovery.
+### Read the water, build a fishing story
+
+Five named feeding grounds have surface rings, baitfish activity and lure hints.
+Emerald pool and Sunset reeds favor spinners; Silverfin spring favors flies;
+Northern channel and the Gilded crown favor minnows. The journal lists grounds,
+discovery goals, records and mastery progress. Perch have gentle short runs, bass
+burst and leap, trout favor acrobatics, and pike make longer surges. Every attack
+has a safe building tell; keep reeling during the tell, then ease when it ends.
+
+Size is relative to each species: **Trophy** begins at 1.25× its reference weight,
+**Legendary** at 1.6×. Precision casts add 0.25× reference weight. Trophy/Legendary
+catches earn 35%/80% extra market value; personal bests add a further 15%.
+Existing inventory retains its original sale values. Both keep and release
+record discoveries and personal bests exactly once. Each catch earns one mastery
+point; release earns another. Every five points grants a rank, up to five ranks,
+each adding 3% passive fight power. Release also retains its slack-tolerance benefit.
+
+Discover the four ordinary species to unlock the Gilded King; use a minnow in the
+far northern water. The journal shows every prerequisite. Its crown-shaped fins,
+golden feeding ground and restrained encounter framing distinguish the encounter.
+The three phases move from long runs to direction-changing leaps to quick bursts;
+each transition starts with recovery. Losing never spends the unlock or costs
+coins, and base tackle can win with attentive line control. Landing reveals the
+fish beside the boat while the catch card records its size and personal best.
 
 ## Saves and safety
 
@@ -66,7 +89,10 @@ Progress and settings use a validated, versioned `stillwater-v2` localStorage
 save. Storage failures leave the session playable and display a warning: export
 your save in Settings before leaving. Export/import uses JSON; import is validated
 and requires confirmation before replacing progress. Reset also requires confirmation.
-In-progress casts/fights are not saved; a reload returns to the dock.
+In-progress casts/fights are not saved; a reload returns to the dock. This upgrade
+keeps the version-2 schema unchanged: mastery and size tiers are derived from
+existing validated fields. Earlier `stillwater-v2` exports remain importable;
+unknown fields and malformed progress are rejected rather than trusted.
 
 The previous chat demo's `golden-hour-3d-v1` save is **not migrated or deleted**.
 Its schema and rewards cannot be reliably reconciled with this game. Back up that
@@ -91,7 +117,9 @@ The original [Apache-2.0 license](LICENSE) is preserved.
 WebGL 2 and a modern browser are required. If graphics initialization fails, an
 HTML error replaces a blank canvas; context loss pauses play. Quality settings
 reduce resolution, shadows and effects, but performance depends on your device.
-Water uses stylized reflection cues, not physically traced reflections. Boat
+Layered ridgelines, procedural clouds, shoreline detail, feeding-ground activity,
+water highlights and wakes build an AAA-inspired art direction, not AAA asset
+fidelity. Water uses stylized reflection cues, not physically traced reflections. Boat
 navigation uses collision-safe direct steering rather than automatic pathfinding.
 There is one biome, no walking RPG, multiplayer, backend, or licensed realism
 assets. Audio is synthesized ambient water/wind and fishing feedback.
