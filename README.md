@@ -47,11 +47,15 @@ settings are enabled by this project.
 5. Visit the dock menu for the market, accepted fishing quests, tackle upgrades,
    owned boat colors, boat name, journal and settings. Selling never erases records.
 
-**Explore:** WASD / arrow keys move the boat relative to your aim. Tap/click water
-to set a straight course; land blocks travel, so steer around obstacles. Drag to
-look, **C** to reset the camera. Touch controls provide movement, casting, reeling
-and line release without needing simultaneous finger holds. Fishing stops travel.
-Use the dock shortcut after retrieving/finishing your cast to skip the return trip.
+**Explore:** W / ↑ gently accelerates forward and S / ↓ reverses; A/D and ←/→ turn
+the helm at a bounded rate. Boat travel follows its heading, independently of cast
+aim, and coasts to a controlled stop when you release the controls. Tap/click legal
+water to set a course; the boat turns and slows as it approaches, and land blocks
+travel. Drag to aim and look, **C** smoothly recenters the camera. The camera keeps
+a steady height and does not swing toward fish or catches; cosmetic boat bob is
+disabled by reduced motion. Touch controls provide movement, casting, reeling and
+line release without needing simultaneous finger holds. Fishing gently brakes the
+boat. Use the dock shortcut after retrieving/finishing your cast to return safely.
 
 **Pause:** Escape opens/closes the menu. Menus, window blur and a hidden tab freeze
 fishing timers. Buttons and dialogs are keyboard accessible; game shortcuts are
