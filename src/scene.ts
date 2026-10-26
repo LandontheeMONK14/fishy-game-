@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import type { Point, Quality, Save, Snapshot, SpeciesId } from './contracts';
-import { HOTSPOTS, bossUnlocked, hotspotAt, isWater } from './simulation';
+import type { Lure, Point, Quality, Save, Snapshot, SpeciesId } from './contracts';
+import { HOTSPOTS, RODS, WORLD, bossUnlocked, hotspotAt, isWater } from './simulation';
 
 const TAU = Math.PI * 2;
 const UP = new THREE.Vector3(0, 1, 0);
@@ -87,8 +87,9 @@ export class LakeScene {
   public readonly canvas: HTMLCanvasElement;
   private readonly renderer: THREE.WebGLRenderer;
   private readonly scene = new THREE.Scene();
-  private readonly camera = new THREE.PerspectiveCamera(48, 1, 0.15, 780);
+  private readonly camera = new THREE.PerspectiveCamera(48, 1, 0.15, 1200);
   private readonly boat = new THREE.Group();
+  private readonly avatar = new THREE.Group();
   private readonly rod = new THREE.Group();
   private readonly float = new THREE.Group();
   private readonly fighter = new THREE.Group();
@@ -98,6 +99,8 @@ export class LakeScene {
   private readonly schools: THREE.Group[] = [];
   private readonly feedingGrounds: THREE.Group[] = [];
   private readonly fineDetail = new THREE.Group();
+  private readonly sceneryBatches: THREE.InstancedMesh[] = [];
+  private readonly landmarks: THREE.Group[] = [];
   private readonly royalWake = new THREE.Group();
   private readonly fishShadow = new THREE.Group();
   private readonly fishes = new Map<SpeciesId, THREE.Group>();
@@ -112,6 +115,7 @@ export class LakeScene {
   private readonly cameraGoal = new THREE.Vector3();
   private readonly lookGoal = new THREE.Vector3();
   private readonly look = new THREE.Vector3(0, 0, 16);
+  private readonly anchor = new THREE.Vector3();
   private readonly rodTip = new THREE.Vector3();
   private readonly p = new THREE.Vector3();
   private readonly q = new THREE.Vector3();
@@ -120,6 +124,8 @@ export class LakeScene {
   private readonly lineGeometry = new THREE.BufferGeometry();
   private readonly rodGeometry = new THREE.BufferGeometry();
   private readonly rodGuides: THREE.Mesh[] = [];
+  private readonly lureModels = new Map<Lure, THREE.Group>();
+  private readonly heldLures = new Map<Lure, THREE.Group>();
   private rodShaft!: THREE.InstancedMesh;
   private readonly water: THREE.ShaderMaterial;
   private readonly hullPaint: THREE.MeshStandardMaterial;
@@ -129,6 +135,8 @@ export class LakeScene {
   private quality: Quality = 'high';
   private orbitYaw = 0;
   private orbitPitch = 0;
+  private viewYaw = 0;
+  private viewPitch = 0;
   private elapsed = 0;
   private ringCursor = 0;
   private dropCursor = 0;
@@ -170,7 +178,7 @@ export class LakeScene {
     this.sun.shadow.camera.far = 300;
     this.sun.shadow.normalBias = 0.06;
     this.sun.shadow.bias = -0.00015;
-    this.scene.add(this.sun);
+    this.scene.add(this.sun, this.sun.target);
     this.grain = woodTexture();
     this.hullPaint = surface('#476f68', 0.64);
     this.makeSky();
@@ -178,6 +186,7 @@ export class LakeScene {
     this.makeLandscape();
     this.makeDock();
     this.makeBoat();
+    this.makeAvatar();
     this.makeFishingGear();
     for (const species of SPECIES) {
       const fish = this.makeFish(species);
@@ -188,7 +197,7 @@ export class LakeScene {
       this.trophies.set(species, trophy);
       this.trophy.add(trophy);
     }
-    this.scene.add(this.boat, this.float, this.fighter, this.trophy, this.aim);
+    this.scene.add(this.boat, this.avatar, this.float, this.fighter, this.trophy, this.aim);
     this.makeSchools();
     this.makeFeedingGrounds();
     const ringGeometry = new THREE.RingGeometry(0.88, 1, 48);
@@ -265,7 +274,7 @@ export class LakeScene {
           #include <colorspace_fragment>
         }`,
     });
-    const dome = mesh(new THREE.SphereGeometry(650, 40, 24), sky, this.scene);
+    const dome = mesh(new THREE.SphereGeometry(900, 40, 24), sky, this.scene);
     dome.castShadow = dome.receiveShadow = false;
   }
 
@@ -280,6 +289,8 @@ export class LakeScene {
         fishPosition: { value: new THREE.Vector2() },
         fishActivity: { value: 0 },
         royal: { value: 0 },
+        lakeSize: { value: new THREE.Vector2(WORLD.rx, WORLD.rz) },
+        islands: { value: WORLD.islands.map(island => new THREE.Vector4(island.x, island.z, island.rx, island.rz)) },
       },
       transparent: true,
       depthWrite: false,
@@ -302,6 +313,8 @@ export class LakeScene {
         uniform vec2 fishPosition;
         uniform float fishActivity;
         uniform float royal;
+        uniform vec2 lakeSize;
+        uniform vec4 islands[${WORLD.islands.length}];
         varying vec3 vWorld;
         void main() {
           vec2 p = vWorld.xz;
@@ -313,10 +326,12 @@ export class LakeScene {
           vec3 n = normalize(vec3(-gradient.x, 1.0, -gradient.y));
           vec3 viewDir = normalize(cameraPosition - vWorld);
           float fresnel = pow(1.0 - max(dot(viewDir, n), 0.0), 3.0);
-          float edge = length(p / vec2(85.0, 60.0));
-          float i1 = length((p - vec2(-46.0, -20.0)) / vec2(10.0, 8.0));
-          float i2 = length((p - vec2(42.0, 24.0)) / vec2(12.0, 8.0));
-          float shallow = max(smoothstep(0.79, 1.0, edge), max(1.0 - smoothstep(1.0, 1.6, i1), 1.0 - smoothstep(1.0, 1.5, i2)));
+          float edge = length(p / lakeSize);
+          float islandEdge = 100.0;
+          for (int i = 0; i < ${WORLD.islands.length}; i++) {
+            islandEdge = min(islandEdge, length((p - islands[i].xy) / islands[i].zw));
+          }
+          float shallow = max(smoothstep(0.88, 1.0, edge), 1.0 - smoothstep(1.0, 1.5, islandEdge));
           vec3 deep = vec3(0.018, 0.115, 0.145);
           vec3 color = mix(deep, vec3(0.19, 0.40, 0.32), shallow * 0.8);
           vec3 reflectedSky = mix(vec3(0.20, 0.36, 0.33), vec3(0.43, 0.37, 0.23), fresnel);
@@ -335,7 +350,7 @@ export class LakeScene {
           float rippleBreak = smoothstep(-0.15, 0.65, sin(p.x * 0.73 + p.y * 0.24 + sin(p.y * 0.81)));
           color += vec3(0.09, 0.15, 0.11) * smoothstep(0.94, 1.0, ribbon) * rippleBreak * 0.24;
           float foam = smoothstep(0.965, 0.999, edge) * (0.5 + sin(a * 2.0) * 0.3);
-          foam += (1.0 - smoothstep(1.0, 1.07, min(i1, i2))) * 0.22;
+          foam += (1.0 - smoothstep(1.0, 1.07, islandEdge)) * 0.22;
           vec2 relative = p - boatPosition;
           vec2 stern = vec2(-sin(boatHeading), cos(boatHeading));
           float aft = dot(relative, stern);
@@ -360,7 +375,7 @@ export class LakeScene {
     const geometry = new THREE.CircleGeometry(1, 144);
     geometry.rotateX(-Math.PI / 2);
     const water = mesh(geometry, material, this.scene);
-    water.scale.set(85, 1, 60);
+    water.scale.set(WORLD.rx, 1, WORLD.rz);
     water.position.y = 0.015;
     water.castShadow = water.receiveShadow = false;
     water.renderOrder = 1;
@@ -387,8 +402,8 @@ export class LakeScene {
         const angle = j / segments * TAU;
         const f = r / rings;
         const radius = 1 + f * 2.4;
-        const x = Math.sin(angle) * 85 * radius;
-        const z = Math.cos(angle) * 60 * radius;
+        const x = Math.sin(angle) * WORLD.rx * radius;
+        const z = Math.cos(angle) * WORLD.rz * radius;
         const ridge = Math.sin(angle * 7 + 1) * 1.2 + Math.cos(angle * 13) * 0.6;
         const y = r === 0 ? -0.16 : 0.45 + f * 9 + ridge * Math.min(f * 6, 1) + Math.sin(x * 0.06) * Math.sin(z * 0.05) * f * 8;
         vertices.push(x, y, z);
@@ -409,14 +424,15 @@ export class LakeScene {
     mesh(terrainGeometry, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, side: THREE.DoubleSide }), this.scene);
     const bed = mesh(new THREE.CircleGeometry(1, 100), surface('#626d49'), this.scene, 0, -1.4, 0);
     bed.rotation.x = -Math.PI / 2;
-    bed.scale.set(85, 60, 1);
-    const islandGeometry = new THREE.SphereGeometry(1, 20, 9);
-    const islands = [{ x: -46, z: -20, rx: 10, rz: 8 }, { x: 42, z: 24, rx: 12, rz: 8 }];
+    bed.scale.set(WORLD.rx, WORLD.rz, 1);
+    const islands = WORLD.islands;
     for (const island of islands) {
-      const bank = mesh(islandGeometry, sand, this.scene, island.x, -1.2, island.z);
-      bank.scale.set(island.rx, 3.1, island.rz);
-      const grass = mesh(islandGeometry, turf, this.scene, island.x, -0.35, island.z);
-      grass.scale.set(island.rx * 0.88, 2.7, island.rz * 0.86);
+      const shape = new THREE.SphereGeometry(1, 32, 10, 0, TAU, 0, Math.PI / 2);
+      // Hemisphere equator is exactly the collision ellipse, not a larger submerged sphere.
+      const bank = mesh(shape, sand, this.scene, island.x, 0.025, island.z);
+      bank.scale.set(island.rx, 2.3, island.rz);
+      const grass = mesh(shape, turf, this.scene, island.x, 0.4, island.z);
+      grass.scale.set(island.rx * 0.87, 2.05, island.rz * 0.87);
     }
 
     // Shared instancing keeps a dense, hand-shaped forest inexpensive.
@@ -455,11 +471,11 @@ export class LakeScene {
         }
       }
     };
-    for (let i = 0; i < 245; i++) {
+    for (let i = 0; i < 530; i++) {
       const angle = rand() * TAU;
       const radius = 1.09 + rand() * 0.75;
-      const x = Math.sin(angle) * 85 * radius;
-      const z = Math.cos(angle) * 60 * radius;
+      const x = Math.sin(angle) * WORLD.rx * radius;
+      const z = Math.cos(angle) * WORLD.rz * radius;
       if (z > 56 && Math.abs(x) < 21) continue;
       const f = (radius - 1) / 2.4;
       const y = 0.7 + f * 9 + (Math.sin(angle * 7 + 1) * 1.2 + Math.cos(angle * 13) * 0.6) * Math.min(f * 6, 1)
@@ -473,12 +489,12 @@ export class LakeScene {
         tree(island.x + Math.cos(a) * r * island.rx, 1.6, island.z + Math.sin(a) * r * island.rz, 0.65 + rand() * 0.4, i % 3 === 0);
       }
     }
-    for (let i = 0; i < 130; i++) {
+    for (let i = 0; i < 300; i++) {
       const a = rand() * TAU;
       const r = 1.01 + rand() * 0.045;
       const size = 0.5 + rand() * 1.4;
-      if (Math.cos(a) > 0.9 && Math.abs(Math.sin(a) * 85) < 7) continue;
-      addMatrix(stoneInstances, Math.sin(a) * 85 * r, 0.18, Math.cos(a) * 60 * r,
+      if (Math.cos(a) > 0.9 && Math.abs(Math.sin(a) * WORLD.rx) < 7) continue;
+      addMatrix(stoneInstances, Math.sin(a) * WORLD.rx * r, 0.18, Math.cos(a) * WORLD.rz * r,
         size * 1.4, size * 0.75, size, rand() * TAU);
     }
     for (const island of islands) {
@@ -489,10 +505,21 @@ export class LakeScene {
       }
     }
     const instantiate = (geometry: THREE.BufferGeometry, material: THREE.Material, list: THREE.Matrix4[]) => {
-      const batch = new THREE.InstancedMesh(geometry, material, list.length);
-      list.forEach((matrix, index) => batch.setMatrixAt(index, matrix));
-      batch.castShadow = batch.receiveShadow = true;
-      this.scene.add(batch);
+      const cells = new Map<string, THREE.Matrix4[]>();
+      for (const matrix of list) {
+        const key = `${Math.floor(matrix.elements[12] / 48)},${Math.floor(matrix.elements[14] / 48)}`;
+        const cell = cells.get(key) ?? [];
+        cell.push(matrix);
+        cells.set(key, cell);
+      }
+      for (const matrices of cells.values()) {
+        const batch = new THREE.InstancedMesh(geometry, material, matrices.length);
+        matrices.forEach((matrix, index) => batch.setMatrixAt(index, matrix));
+        batch.castShadow = batch.receiveShadow = true;
+        batch.computeBoundingSphere();
+        this.sceneryBatches.push(batch);
+        this.scene.add(batch);
+      }
     };
     instantiate(new THREE.CylinderGeometry(0.8, 1, 1, 6), bark, trunkInstances);
     const foliageGeometry = new THREE.IcosahedronGeometry(1, 1);
@@ -502,11 +529,11 @@ export class LakeScene {
     // Reeds form irregular coves rather than an unbroken decorative border.
     const reedMatrices: THREE.Matrix4[] = [];
     const reedTops: THREE.Matrix4[] = [];
-    for (let i = 0; i < 360; i++) {
+    for (let i = 0; i < 720; i++) {
       const a = rand() * TAU;
       if (Math.sin(a * 5) < -0.05 || (Math.cos(a) > 0.92 && Math.abs(Math.sin(a)) < 0.25)) continue;
       const r = 0.965 + rand() * 0.037;
-      const x = Math.sin(a) * 85 * r, z = Math.cos(a) * 60 * r;
+      const x = Math.sin(a) * WORLD.rx * r, z = Math.cos(a) * WORLD.rz * r;
       const h = 0.7 + rand() * 1.2;
       addMatrix(reedMatrices, x, h * 0.5 - 0.08, z, 0.035, h, 0.035);
       addMatrix(reedTops, x, h - 0.05, z, 0.065, 0.28, 0.065);
@@ -518,8 +545,8 @@ export class LakeScene {
     for (let layer = 2; layer >= 0; layer--) {
       const material = surface(mountainColors[layer]);
       for (let i = 0; i < 10; i++) {
-        const x = (i - 4.5) * 52 + (layer % 2) * 21;
-        const z = -140 - layer * 74 - rand() * 20;
+        const x = (i - 4.5) * WORLD.rx * 0.22 + (layer % 2) * 21;
+        const z = -WORLD.rz - 75 - layer * 74 - rand() * 20;
         const height = 35 + rand() * 45 + layer * 9;
         const geometry = new THREE.BufferGeometry();
         const pts: number[] = [], idx: number[] = [];
@@ -546,7 +573,7 @@ export class LakeScene {
     }
     // A few exposed outcrops give the northern shore a recognizable landmark.
     for (let i = 0; i < 7; i++) {
-      const outcrop = mesh(new THREE.DodecahedronGeometry(1, 0), darkRock, this.scene, 18 + i * 3, 2 + rand() * 2, -60 - rand() * 5);
+      const outcrop = mesh(new THREE.DodecahedronGeometry(1, 0), darkRock, this.scene, 18 + i * 3, 2 + rand() * 2, -WORLD.rz - rand() * 5);
       outcrop.scale.set(3 + rand() * 2, 4 + rand() * 6, 3 + rand() * 2);
       outcrop.rotation.set(rand(), rand(), rand() * 0.2);
     }
@@ -555,7 +582,7 @@ export class LakeScene {
     for (let i = 0; i < 110; i++) {
       const a = rand() * TAU;
       const r = 1.15 + rand() * 0.6;
-      const x = Math.sin(a) * 85 * r, z = Math.cos(a) * 60 * r;
+      const x = Math.sin(a) * WORLD.rx * r, z = Math.cos(a) * WORLD.rz * r;
       if (z > 60 && Math.abs(x) < 22) continue;
       const h = 7 + rand() * 9;
       for (let tier = 0; tier < 4; tier++) {
@@ -568,14 +595,15 @@ export class LakeScene {
     // Jagged snow shelves repeat the summit profile, not isolated white cones.
     for (let ridge = 0; ridge < 2; ridge++) {
       const positions: number[] = [], snow: number[] = [];
-      const z = -220 - ridge * 78;
+      const z = -WORLD.rz - 180 - ridge * 78;
+      const span = WORLD.rx / 7;
       for (let i = 0; i < 22; i++) {
-        const x = -260 + i * 25;
+        const x = -WORLD.rx * 1.5 + i * span;
         const h = 39 + ridge * 20 + Math.sin(i * 1.7 + ridge) * 17 + rand() * 21;
         const nextH = 39 + ridge * 20 + Math.sin((i + 1) * 1.7 + ridge) * 17 + rand() * 21;
-        positions.push(x, -3, z, x, h, z, x + 25, nextH, z, x, -3, z, x + 25, nextH, z, x + 25, -3, z);
-        snow.push(x, h, z + 0.1, x + 25, nextH, z + 0.1, x + 18, nextH - 9, z + 0.1,
-          x, h, z + 0.1, x + 18, nextH - 9, z + 0.1, x + 7, h - 7, z + 0.1);
+        positions.push(x, -3, z, x, h, z, x + span, nextH, z, x, -3, z, x + span, nextH, z, x + span, -3, z);
+        snow.push(x, h, z + 0.1, x + span, nextH, z + 0.1, x + span * 0.72, nextH - 9, z + 0.1,
+          x, h, z + 0.1, x + span * 0.72, nextH - 9, z + 0.1, x + span * 0.28, h - 7, z + 0.1);
       }
       for (const [vertices, color] of [[positions, ridge ? '#8ba2a3' : '#617f82'], [snow, ridge ? '#d0d4c4' : '#b9c9c0']] as const) {
         const geometry = new THREE.BufferGeometry();
@@ -613,11 +641,12 @@ export class LakeScene {
       }
     }
     const fallen = new THREE.Group();
-    fallen.position.set(-73, 0.65, 5);
+    fallen.position.set(-46, 2.1, -20);
     fallen.rotation.y = 0.7;
     beam(fallen, bark, new THREE.Vector3(-5, 0, 0), new THREE.Vector3(4, 0.6, 0), 0.46);
     for (let i = 0; i < 4; i++) beam(fallen, bark, new THREE.Vector3(-2 + i * 1.5, 0.2, 0), new THREE.Vector3(-3 + i * 1.8, 1.2, i % 2 ? 1.6 : -1.1), 0.09);
     this.fineDetail.add(fallen);
+    this.makeRegionalScenery();
   }
 
   private makeDock(): void {
@@ -628,32 +657,31 @@ export class LakeScene {
     const dark = surface('#3d554c');
     const roof = surface('#4b6258');
     const brass = new THREE.MeshStandardMaterial({ color: '#bda16a', roughness: 0.4, metalness: 0.6 });
-    for (let i = 0; i < 48; i++) {
-      box(dock, timber, 0, 0.9, 38 + i * 0.47, 4.4, 0.20, 0.43);
+    for (let i = 0; i < 33; i++) {
+      box(dock, timber, -3, 0.4, 29.2 + i * 0.455, 2.8, 0.20, 0.43);
       if (i % 10 === 0) {
-        for (const x of [-2.1, 2.1]) {
-          mesh(new THREE.CylinderGeometry(0.17, 0.23, 3.6, 8), edge, dock, x, 0.3, 38 + i * 0.47);
-          const cap = mesh(new THREE.CylinderGeometry(0.21, 0.21, 0.1, 8), timber, dock, x, 2.1, 38 + i * 0.47);
+        for (const x of [-4.5, -1.5]) {
+          mesh(new THREE.CylinderGeometry(0.13, 0.17, 2.4, 8), edge, dock, x, -0.2, 29.2 + i * 0.455);
+          const cap = mesh(new THREE.CylinderGeometry(0.17, 0.17, 0.1, 8), timber, dock, x, 1.05, 29.2 + i * 0.455);
           cap.rotation.y = 0.3;
         }
       }
     }
-    box(dock, edge, -1.7, 0.66, 49, 0.18, 0.28, 22.7);
-    box(dock, edge, 1.7, 0.66, 49, 0.18, 0.28, 22.7);
-    for (const z of [47.5, 52.2, 56.9]) {
-      beam(dock, timber, new THREE.Vector3(-2.1, 1.75, z), new THREE.Vector3(-2.1, 1.75, z + 4.5), 0.075);
-      beam(dock, timber, new THREE.Vector3(2.1, 1.75, z), new THREE.Vector3(2.1, 1.75, z + 4.5), 0.075);
+    box(dock, edge, -4.1, 0.2, 36.5, 0.18, 0.28, 15);
+    box(dock, edge, -1.9, 0.2, 36.5, 0.18, 0.28, 15);
+    for (const z of [37, 40]) {
+      beam(dock, timber, new THREE.Vector3(-4.5, 0.95, z), new THREE.Vector3(-4.5, 0.95, z + 3), 0.055);
     }
-    for (const x of [-1.5, 1.5]) {
-      mesh(new THREE.TorusGeometry(0.18, 0.04, 6, 16), brass, dock, x, 1.08, 39).rotation.x = Math.PI / 2;
+    for (const x of [-4, -2]) {
+      mesh(new THREE.TorusGeometry(0.18, 0.04, 6, 16), brass, dock, x, 0.56, 31).rotation.x = Math.PI / 2;
     }
     const rope = new THREE.MeshStandardMaterial({ color: '#b9aa80', roughness: 1 });
     for (let i = 0; i < 4; i++) {
-      const coil = mesh(new THREE.TorusGeometry(0.4 - i * 0.065, 0.035, 5, 28), rope, dock, -1.1, 1.06 + i * 0.025, 42);
+      const coil = mesh(new THREE.TorusGeometry(0.3 - i * 0.05, 0.025, 5, 28), rope, dock, -4, 0.56 + i * 0.025, 33);
       coil.rotation.x = Math.PI / 2;
     }
     const house = new THREE.Group();
-    house.position.set(-10.5, 1, 62.5);
+    house.position.set(-10.5, 1.8, WORLD.rz + 12);
     this.scene.add(house);
     box(house, edge, 0, 0.22, 0, 10, 0.4, 8);
     box(house, dark, 0, 2.55, 0, 8.5, 4.8, 6.6);
@@ -714,10 +742,142 @@ export class LakeScene {
       box(house, glass, x, 3.25, -6.73, 0.25, 0.34, 0.28);
       box(house, lanternMetal, x, 3.55, -6.7, 0.45, 0.12, 0.43);
     }
-    // Jetty-to-market boardwalk and a mooring buoy.
-    for (let i = 0; i < 20; i++) box(dock, timber, -i * 0.48, 1.3, 58.2, 0.43, 0.16, 2.6);
-    const buoy = mesh(new THREE.SphereGeometry(0.38, 12, 8), surface('#bb7049'), dock, 4, 0.2, 42);
+    const rack = new THREE.Group();
+    rack.position.set(-4.05, 0.5, 35);
+    dock.add(rack);
+    box(rack, edge, 0, 0.42, 0, 0.36, 0.12, 1.8);
+    box(rack, timber, 0, 1.25, 0, 0.12, 0.12, 1.8);
+    for (let i = 0; i < 4; i++) {
+      const shaft = surface(['#7b593c', '#488777', '#8f678d', '#d2af55'][i], 0.45);
+      beam(rack, shaft, new THREE.Vector3(0, 0.1, -0.6 + i * 0.4), new THREE.Vector3(-0.22, 2.8 + i * 0.17, -0.6 + i * 0.4), 0.025);
+      mesh(new THREE.TorusGeometry(0.10, 0.025, 5, 10), brass, rack, 0, 0.65, -0.6 + i * 0.4).rotation.y = Math.PI / 2;
+    }
+    box(dock, dark, -4.4, 1.65, 35, 0.12, 0.55, 2.1);
+    this.label('TACKLE · SHOP', '#f2d595', 2.4, 0.55, dock, -3.7, 2.3, 35);
+    this.label('BOARD', '#cbe7d9', 1.5, 0.4, dock, -2.9, 1.4, 30);
+    const buoy = mesh(new THREE.SphereGeometry(0.38, 12, 8), surface('#bb7049'), dock, 3, 0.2, 36);
     buoy.scale.y = 1.4;
+  }
+
+  private label(text: string, color: string, width: number, height: number, parent: THREE.Object3D, x = 0, y = 0, z = 0): THREE.Sprite {
+    const canvas = document.createElement('canvas');
+    canvas.width = 512;
+    canvas.height = 96;
+    const context = canvas.getContext('2d')!;
+    context.fillStyle = 'rgba(24,43,39,0.88)';
+    context.fillRect(0, 0, 512, 96);
+    context.strokeStyle = color;
+    context.lineWidth = 3;
+    context.strokeRect(3, 3, 506, 90);
+    context.fillStyle = color;
+    context.font = 'bold 30px Georgia, serif';
+    context.textAlign = 'center';
+    context.textBaseline = 'middle';
+    context.fillText(text, 256, 48, 480);
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, depthWrite: false }));
+    sprite.position.set(x, y, z);
+    sprite.scale.set(width, height, 1);
+    parent.add(sprite);
+    return sprite;
+  }
+
+  private makeAvatar(): void {
+    const jacket = surface('#bd8a4f');
+    const trousers = surface('#3e615d');
+    const boots = surface('#403e31');
+    const skin = surface('#d9af87');
+    const hat = surface('#d2bd87');
+    for (const side of [-1, 1]) {
+      box(this.avatar, trousers, side * 0.13, 0.34, 0, 0.2, 0.58, 0.22);
+      box(this.avatar, boots, side * 0.13, 0.075, -0.055, 0.22, 0.15, 0.34);
+      beam(this.avatar, jacket, new THREE.Vector3(side * 0.27, 1.12, 0), new THREE.Vector3(side * 0.29, 0.87, -0.23), 0.09);
+      mesh(new THREE.SphereGeometry(0.09, 8, 6), skin, this.avatar, side * 0.29, 0.87, -0.27);
+    }
+    box(this.avatar, jacket, 0, 0.91, 0, 0.49, 0.59, 0.29);
+    mesh(new THREE.SphereGeometry(0.21, 12, 9), skin, this.avatar, 0, 1.4, -0.015);
+    mesh(new THREE.CylinderGeometry(0.34, 0.34, 0.055, 16), hat, this.avatar, 0, 1.57, -0.015);
+    mesh(new THREE.CylinderGeometry(0.21, 0.24, 0.18, 12), hat, this.avatar, 0, 1.66, 0);
+    box(this.avatar, surface('#776341'), 0, 0.88, 0.23, 0.35, 0.40, 0.18);
+  }
+
+  private makeRegionalScenery(): void {
+    const bark = surface('#66543e');
+    const granite = surface('#789b9e');
+    const snow = surface('#d5dcd0');
+    const gold = surface('#bca05e');
+    const reed = surface('#8d9861');
+    const droopingLeaves = surface('#85924b');
+    const stone = new THREE.DodecahedronGeometry(1, 0);
+    // Low-poly landmarks are static, local, and individually distance/frustum culled.
+    WORLD.islands.forEach((island, index) => {
+      const landmark = new THREE.Group();
+      landmark.position.set(island.x, 1.8, island.z);
+      this.landmarks.push(landmark);
+      this.scene.add(landmark);
+      if (island.x < -80) {
+        beam(landmark, bark, new THREE.Vector3(), new THREE.Vector3(0.8, 8, 0), 0.52);
+        for (let i = 0; i < 8; i++) {
+          const a = i / 8 * TAU;
+          const x = Math.sin(a) * 4.3, z = Math.cos(a) * 4.3;
+          beam(landmark, bark, new THREE.Vector3(0.5, 5, 0), new THREE.Vector3(x, 7.4, z), 0.13);
+          const curtain = mesh(new THREE.ConeGeometry(1.25, 6.3, 6), droopingLeaves, landmark, x, 5.3, z);
+          curtain.rotation.z = Math.sin(a) * 0.16;
+        }
+      } else if (island.z < -65 && island.x < 80) {
+        for (let i = 0; i < 5; i++) {
+          const spire = mesh(stone, granite, landmark, (i - 2) * 2.1, 1.4 + i % 2, Math.sin(i) * 2);
+          spire.scale.set(1.4, 4 + i % 3 * 1.5, 1.7);
+          const cap = mesh(stone, snow, landmark, (i - 2) * 2.1, 5 + i % 3, Math.sin(i) * 2);
+          cap.scale.set(1.05, 0.6, 1.25);
+        }
+        if (index === WORLD.islands.length - 1) {
+          const crown = mesh(new THREE.TorusGeometry(3.1, 0.35, 6, 20), gold, landmark, 0, 7.5, 0);
+          crown.rotation.x = Math.PI / 2;
+          for (let i = 0; i < 5; i++) mesh(new THREE.ConeGeometry(0.55, 2, 4), gold, landmark, Math.sin(i * TAU / 5) * 3.1, 8.3, Math.cos(i * TAU / 5) * 3.1);
+        }
+      } else if (island.x > 80 && island.z < 75) {
+        for (let i = 0; i < 6; i++) {
+          const crystal = mesh(new THREE.CylinderGeometry(0.3, 1.5, 7 + i % 3 * 2, 5), granite, landmark, Math.sin(i * 2.4) * 4, 2.6, Math.cos(i * 2.4) * 3);
+          crystal.rotation.z = Math.sin(i) * 0.19;
+        }
+      }
+    });
+    const orchard = new THREE.Group();
+    const orchardIsland = WORLD.islands.find(island => island.x > 80 && island.z > 75)!;
+    orchard.position.set(orchardIsland.x, 1.8, orchardIsland.z);
+    for (let i = 0; i < 12; i++) {
+      const x = (i % 4 - 1.5) * 5.6, z = Math.floor(i / 4) * 5 - 5;
+      beam(orchard, bark, new THREE.Vector3(x, -0.8, z), new THREE.Vector3(x + 0.5, 3 + i % 3, z), 0.20);
+      for (const side of [-1, 1]) beam(orchard, bark, new THREE.Vector3(x, 1.6, z), new THREE.Vector3(x + side * 1.6, 3.3, z + side * 0.7), 0.08);
+    }
+    this.landmarks.push(orchard);
+    this.scene.add(orchard);
+    const wetland = new THREE.Group();
+    wetland.position.set(-180, 0, 12);
+    const stamps = new THREE.InstancedMesh(new THREE.ConeGeometry(0.15, 1.8, 4), reed, 90);
+    for (let i = 0; i < 90; i++) {
+      this.dummy.position.set(Math.sin(i * 2.4) * (5 + i % 8), 0.65, Math.cos(i * 2.4) * (3 + i % 5));
+      this.dummy.rotation.set(0, i, Math.sin(i) * 0.12);
+      this.dummy.scale.setScalar(0.7 + i % 4 * 0.17);
+      this.dummy.updateMatrix();
+      stamps.setMatrixAt(i, this.dummy.matrix);
+    }
+    stamps.computeBoundingSphere();
+    wetland.add(stamps);
+    this.landmarks.push(wetland);
+    this.scene.add(wetland);
+    const falls = new THREE.Group();
+    falls.position.set(WORLD.rx + 2, 0, -8);
+    for (let i = 0; i < 5; i++) {
+      const cliff = mesh(stone, granite, falls, i % 2 * 3, 4 + i % 2 * 3, (i - 2) * 5);
+      cliff.scale.set(5, 7 + i % 2 * 3, 4);
+    }
+    const cascade = box(falls, new THREE.MeshStandardMaterial({ color: '#c3e4db', emissive: '#305d61', transparent: true, opacity: 0.78, roughness: 0.35 }), -4, 6, 0, 0.15, 11, 3.8);
+    cascade.rotation.z = -0.1;
+    this.landmarks.push(falls);
+    this.scene.add(falls);
   }
 
   private makeBoat(): void {
@@ -767,9 +927,10 @@ export class LakeScene {
     for (let i = 0; i < 7; i++) {
       box(this.boat, wood, (i - 3) * 0.20, -0.13, -0.2, 0.185, 0.09, 3.8);
     }
+    box(this.boat, wood, 0, 0.4, 0, 1.3, 0.1, 2.6);
     box(this.boat, wood, 0, 0.35, 2, 1.75, 0.8, 0.10);
-    for (const z of [-1.45, 0.10, 1.35]) {
-      const width = z === -1.45 ? 1.83 : 2.12;
+    for (const z of [-1.6, 1.6]) {
+      const width = z < 0 ? 1.83 : 1.92;
       box(this.boat, trim, 0, 0.49, z, width, 0.12, 0.46);
       for (const x of [-width * 0.4, width * 0.4]) {
         box(this.boat, darkWood, x, 0.24, z, 0.1, 0.45, 0.28);
@@ -779,10 +940,10 @@ export class LakeScene {
       }
     }
     box(this.boat, darkWood, 0, 0.12, 2.13, 0.08, 0.55, 0.7);
-    const crate = box(this.boat, surface('#4f655b'), -0.4, 0.13, 0.75, 0.60, 0.44, 0.55);
+    const crate = box(this.boat, surface('#4f655b'), -0.4, 0.38, 1.65, 0.60, 0.44, 0.55);
     box(crate, trim, 0, 0.24, 0, 0.63, 0.05, 0.58);
     box(crate, metal, 0, 0.06, -0.29, 0.11, 0.1, 0.04);
-    mesh(new THREE.CylinderGeometry(0.22, 0.19, 0.38, 12, 1, true), metal, this.boat, 0.52, 0.08, 0.72);
+    mesh(new THREE.CylinderGeometry(0.22, 0.19, 0.38, 12, 1, true), metal, this.boat, 0.52, 0.5, 1.65);
     for (const side of [-1, 1]) {
       const oar = new THREE.Group();
       oar.position.set(side * 1.14, 0.68, 0.2);
@@ -800,7 +961,7 @@ export class LakeScene {
       const coil = mesh(new THREE.TorusGeometry(0.25 - i * 0.04, 0.022, 4, 24), rope, this.boat, 0, 0.59 + i * 0.015, -1.45);
       coil.rotation.x = Math.PI / 2;
     }
-    const cushion = box(this.boat, surface('#865c43'), 0, 0.60, 0.1, 0.74, 0.13, 0.42);
+    const cushion = box(this.boat, surface('#865c43'), 0, 0.60, -1.6, 0.74, 0.13, 0.42);
     cushion.rotation.z = 0.02;
   }
 
@@ -808,8 +969,8 @@ export class LakeScene {
     const carbon = surface('#343c33', 0.45);
     const cork = surface('#c0a575');
     const metal = new THREE.MeshStandardMaterial({ color: '#adb8a0', roughness: 0.3, metalness: 0.7 });
-    this.rod.position.set(0.66, 0.85, -0.2);
-    this.boat.add(this.rod);
+    this.rod.position.set(0.28, 0.9, -0.2);
+    this.avatar.add(this.rod);
     beam(this.rod, cork, new THREE.Vector3(0, 0, 0.45), new THREE.Vector3(0, 0.5, -0.1), 0.06);
     this.rodGeometry.setAttribute('position', new THREE.BufferAttribute(this.rodPositions, 3).setUsage(THREE.DynamicDrawUsage));
     const rodLine = new THREE.Line(this.rodGeometry, new THREE.LineBasicMaterial({ color: '#2d3e37', linewidth: 2 }));
@@ -838,6 +999,27 @@ export class LakeScene {
     mesh(new THREE.SphereGeometry(0.11, 12, 8), white, this.float, 0, 0.05, 0).scale.y = 1.3;
     mesh(new THREE.SphereGeometry(0.09, 12, 8), red, this.float, 0, 0.14, 0);
     mesh(new THREE.CylinderGeometry(0.017, 0.017, 0.38, 5), red, this.float, 0, 0.30, 0);
+    const spinner = new THREE.Group();
+    mesh(new THREE.TorusGeometry(0.11, 0.04, 5, 10), surface('#d69252', 0.3), spinner).scale.set(0.65, 1.4, 1);
+    const fly = new THREE.Group();
+    mesh(new THREE.SphereGeometry(0.08, 8, 6), surface('#c8dcdf'), fly).scale.set(1, 0.7, 2.6);
+    for (const side of [-1, 1]) {
+      const wing = mesh(new THREE.ConeGeometry(0.09, 0.32, 4), surface('#e9d7c3'), fly, side * 0.11, 0.08, 0);
+      wing.rotation.z = side * -0.9;
+    }
+    const minnow = new THREE.Group();
+    mesh(new THREE.SphereGeometry(0.12, 10, 7), surface('#e4ba58', 0.3), minnow).scale.set(0.7, 0.8, 2.2);
+    mesh(new THREE.ConeGeometry(0.12, 0.17, 3), red, minnow, 0, 0, 0.25).rotation.x = Math.PI / 2;
+    for (const [id, model] of [['spinner', spinner], ['fly', fly], ['minnow', minnow]] as const) {
+      model.position.set(0, -0.12, 0);
+      this.lureModels.set(id, model);
+      this.float.add(model);
+      const held = model.clone();
+      held.position.set(0.3, 0.72, -0.45);
+      held.scale.setScalar(1.6);
+      this.avatar.add(held);
+      this.heldLures.set(id, held);
+    }
     const ring = mesh(new THREE.RingGeometry(0.7, 0.81, 56), new THREE.MeshBasicMaterial({ color: '#dfd4a3', transparent: true, opacity: 0.7, side: THREE.DoubleSide, depthWrite: false }), this.aim);
     ring.rotation.x = -Math.PI / 2;
     ring.castShadow = false;
@@ -1101,6 +1283,8 @@ export class LakeScene {
         crown.renderOrder = 3;
         crown.castShadow = crown.receiveShadow = false;
       }
+      const label = this.label(spot.name, color, 7.2, 1.35, ground, 0, 2.8, 0);
+      label.name = 'destination';
       this.feedingGrounds.push(ground);
       this.scene.add(ground);
     });
@@ -1159,7 +1343,7 @@ export class LakeScene {
     if (this.disposed || this.lost) return;
     const step = snapshot.paused ? 0 : Math.min(Math.max(dt, 0), 0.05);
     const motion = !save.settings.reducedMotion;
-    const moving = motion && !snapshot.paused;
+    const moving = motion && step > 0;
     if (moving) this.elapsed += step;
     const time = this.elapsed;
     this.water.uniforms.time.value = time;
@@ -1183,14 +1367,32 @@ export class LakeScene {
     }
     this.boat.position.set(snapshot.boat.x, 0.05 + (motion ? Math.sin(time * 1.45) * 0.035 : 0), snapshot.boat.z);
     this.boat.rotation.set(motion ? Math.sin(time * 1.15) * 0.009 : 0, -snapshot.boat.yaw, motion ? Math.sin(time * 1.6) * 0.014 : 0);
+    const onDock = snapshot.mode === 'dock';
+    if (onDock) {
+      this.avatar.position.set(snapshot.player.x, 0.5, snapshot.player.z);
+      this.avatar.rotation.y = 0;
+    } else {
+      const sin = Math.sin(snapshot.boat.yaw), cos = Math.cos(snapshot.boat.yaw);
+      this.avatar.position.set(
+        snapshot.boat.x + snapshot.player.x * cos - snapshot.player.z * sin,
+        0.5,
+        snapshot.boat.z + snapshot.player.x * sin + snapshot.player.z * cos,
+      );
+      this.avatar.rotation.y = -snapshot.boat.yaw;
+    }
+    const rodIndex = Math.max(0, RODS.findIndex(rod => rod.id === save.tackle.rod));
+    this.rod.scale.setScalar([0.92, 1.07, 1.20][rodIndex] ?? 1);
+    (this.rodShaft.material as THREE.MeshStandardMaterial).color.set(['#76543b', '#3c968a', '#d6b66c'][rodIndex] ?? '#76543b');
+    for (const [id, model] of this.lureModels) model.visible = id === save.tackle.lure;
+    for (const [id, model] of this.heldLures) model.visible = id === save.tackle.lure && snapshot.phase === 'aim';
     const rowing = Math.min(Math.abs(snapshot.boat.speed) / 5, 1);
     this.oars.forEach((oar, index) => {
       const side = index === 0 ? -1 : 1;
       oar.rotation.y = side * (0.25 + Math.sin(time * 3.3) * 0.45 * rowing);
       oar.rotation.z = side * (-0.10 + Math.cos(time * 3.3) * 0.17 * rowing);
     });
-    const fishing = snapshot.phase !== 'aim' && snapshot.phase !== 'charge' && snapshot.phase !== 'land';
-    const aiming = snapshot.phase === 'aim' || snapshot.phase === 'charge';
+    const fishing = snapshot.mode === 'fish' && snapshot.phase !== 'aim' && snapshot.phase !== 'charge' && snapshot.phase !== 'land';
+    const aiming = (snapshot.mode === 'deck' || snapshot.mode === 'fish') && (snapshot.phase === 'aim' || snapshot.phase === 'charge');
     this.aim.visible = aiming;
     this.aim.position.set(snapshot.target.x, 0.11, snapshot.target.z);
     const spot = hotspotAt(snapshot.target);
@@ -1207,7 +1409,7 @@ export class LakeScene {
     this.float.rotation.z = motion ? snapshot.phase === 'bite' ? Math.sin(time * 16) * 0.4 : Math.sin(time * 2) * 0.08 : 0;
     const tension = snapshot.phase === 'fight' ? snapshot.tension : 0;
     const cast = snapshot.phase === 'charge' ? snapshot.charge : snapshot.phase === 'cast' ? 0.25 : 0;
-    this.rod.rotation.y = THREE.MathUtils.clamp(snapshot.boat.yaw - snapshot.aimYaw, -1.25, 1.25);
+    this.rod.rotation.y = snapshot.mode === 'fish' ? THREE.MathUtils.clamp(snapshot.boat.yaw - snapshot.aimYaw, -1.25, 1.25) : 0;
     this.rod.rotation.x = -cast * 0.85 + (snapshot.phase === 'fight' ? -0.16 : 0);
     for (let i = 0; i < 19; i++) {
       const t = i / 18;
@@ -1234,7 +1436,7 @@ export class LakeScene {
       const t = (i + 1) / 5;
       this.rodGuides[i].position.set(0, 0.5 + t * 1.85 - tension * t * t * 1.25, -0.1 - t * 3.15);
     }
-    this.boat.updateMatrixWorld(true);
+    this.avatar.updateMatrixWorld(true);
     this.rodTip.set(this.rodPositions[54], this.rodPositions[55], this.rodPositions[56]);
     this.rod.localToWorld(this.rodTip);
     this.p.set(fishing ? snapshot.float.x : snapshot.boat.x, fishing ? this.float.position.y + 0.35 : 0.4, fishing ? snapshot.float.z : snapshot.boat.z - 2);
@@ -1249,6 +1451,7 @@ export class LakeScene {
       this.linePositions[i * 3 + 2] = this.q.z;
     }
     this.lineGeometry.attributes.position.needsUpdate = true;
+    this.lineGeometry.setDrawRange(0, snapshot.mode === 'fish' ? 49 : 0);
     const showFish = snapshot.phase === 'fight';
     this.fighter.visible = showFish;
     this.fighter.position.set(snapshot.fish.x, snapshot.fish.y, snapshot.fish.z);
@@ -1292,12 +1495,15 @@ export class LakeScene {
     const unlocked = bossUnlocked(save);
     this.feedingGrounds.forEach((ground, index) => {
       const hot = HOTSPOTS[index];
-      ground.visible = hot.species !== 'king' || unlocked;
+      const distance = Math.hypot(hot.x - this.avatar.position.x, hot.z - this.avatar.position.z);
+      ground.visible = (hot.species !== 'king' || unlocked) && distance < (this.quality === 'low' ? 110 : 210);
       const matched = hot.lure === snapshot.lure;
       for (let i = 0; i < ground.children.length; i++) {
         const object = ground.children[i] as THREE.Mesh;
         const material = object.material as THREE.MeshBasicMaterial;
-        if (object.name === 'activity') {
+        if (object.name === 'destination') {
+          object.visible = distance < 75;
+        } else if (object.name === 'activity') {
           const a = time * (hot.species === 'king' ? 0.13 : 0.25) + i * 2.1 + index;
           object.position.x = Math.sin(a) * hot.radius * 0.34;
           object.position.z = Math.cos(a) * hot.radius * 0.34;
@@ -1359,29 +1565,32 @@ export class LakeScene {
       fish.visible = this.quality !== 'low' || i < 6;
     }
 
-    const cameraYaw = yaw + this.orbitYaw;
-    this.cameraGoal.set(
-      snapshot.boat.x + Math.sin(cameraYaw) * 17.5 + Math.cos(cameraYaw) * 3.3,
-      10.8 + this.orbitPitch * 11,
-      snapshot.boat.z + Math.cos(cameraYaw) * 17.5 - Math.sin(cameraYaw) * 3.3,
-    );
-    // Keep the view inside the lake without changing its height or introducing a camera roll.
-    const cameraRadius = Math.hypot(this.cameraGoal.x / 81, this.cameraGoal.z / 56);
-    if (cameraRadius > 1) {
-      this.cameraGoal.x /= cameraRadius;
-      this.cameraGoal.z /= cameraRadius;
+    const detailDistance = this.quality === 'low' ? 110 : this.quality === 'medium' ? 175 : 250;
+    for (const batch of this.sceneryBatches) {
+      const bounds = batch.boundingSphere!;
+      batch.visible = Math.hypot(bounds.center.x - this.avatar.position.x, bounds.center.z - this.avatar.position.z) < detailDistance + bounds.radius;
+      batch.castShadow = this.quality !== 'low' && Math.hypot(bounds.center.x - this.avatar.position.x, bounds.center.z - this.avatar.position.z) < 65;
     }
-    this.lookGoal.set(snapshot.boat.x - Math.sin(cameraYaw) * 8, 4.5, snapshot.boat.z - Math.cos(cameraYaw) * 8);
-    const smoothing = snapshot.paused ? 0 : 1 - Math.exp(-step * 3);
-    if (!this.cameraReady) {
+    for (const landmark of this.landmarks) {
+      landmark.visible = landmark.position.distanceTo(this.avatar.position) < detailDistance + 30;
+    }
+    if (!this.cameraReady || step > 0) {
+      const smoothing = this.cameraReady ? 1 - Math.exp(-step * 9) : 1;
+      this.viewYaw = THREE.MathUtils.lerp(this.viewYaw, this.orbitYaw, smoothing);
+      this.viewPitch = THREE.MathUtils.lerp(this.viewPitch, this.orbitPitch, smoothing);
+      // Only manual orbit is smoothed. A shared flat anchor translates both endpoints
+      // exactly, so steering, fish motion, bobbing and dock teleports cannot rotate the view.
+      this.anchor.set(this.avatar.position.x, 0, this.avatar.position.z);
+      const sin = Math.sin(this.viewYaw), cos = Math.cos(this.viewYaw);
+      this.cameraGoal.set(this.anchor.x - sin * 17.5 + cos * 3.3, 10.8 + this.viewPitch * 11, this.anchor.z + cos * 17.5 + sin * 3.3);
+      this.lookGoal.set(this.anchor.x + sin * 8, 4.5, this.anchor.z - cos * 8);
       this.camera.position.copy(this.cameraGoal);
       this.look.copy(this.lookGoal);
+      this.camera.lookAt(this.look);
       this.cameraReady = true;
-    } else {
-      this.camera.position.lerp(this.cameraGoal, smoothing);
-      this.look.lerp(this.lookGoal, smoothing);
+      this.sun.position.set(this.anchor.x - 65, 95, this.anchor.z - 110);
+      this.sun.target.position.copy(this.anchor);
     }
-    this.camera.lookAt(this.look);
     this.renderer.render(this.scene, this.camera);
   }
 
@@ -1432,10 +1641,7 @@ export class LakeScene {
     this.raycaster.setFromCamera(this.pointer, this.camera);
     if (!this.raycaster.ray.intersectPlane(this.plane, this.hit)) return null;
     const { x, z } = this.hit;
-    if (Math.hypot(x / 85, z / 60) > 0.985) return null;
-    if (Math.hypot((x + 46) / 10, (z + 20) / 8) < 1.08 || Math.hypot((x - 42) / 12, (z - 24) / 8) < 1.08) return null;
-    if (Math.abs(x) < 2.3 && z > 37) return null;
-    return { x, z };
+    return isWater({ x, z }) ? { x, z } : null;
   }
 
   dispose(): void {

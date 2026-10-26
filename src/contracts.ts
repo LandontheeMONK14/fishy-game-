@@ -2,6 +2,7 @@ export type SpeciesId = 'perch' | 'trout' | 'bass' | 'pike' | 'king';
 export type Phase = 'aim' | 'charge' | 'cast' | 'wait' | 'bite' | 'fight' | 'land';
 export type Quality = 'low' | 'medium' | 'high';
 export type Lure = 'spinner' | 'fly' | 'minnow';
+export type Mode = 'dock' | 'deck' | 'helm' | 'fish';
 export interface Point { x: number; z: number }
 export interface Catch {
   id: number; species: SpeciesId; weight: number; value: number; record: boolean;
@@ -21,8 +22,14 @@ export interface Save {
   quests: Record<string, { accepted: boolean; claimed: boolean; base: number }>;
   settings: { quality: Quality; assist: boolean; reducedMotion: boolean; volume: number; muted: boolean };
   nextCatchId: number;
+  tackle: { rods: string[]; lures: Lure[]; rod: string; lure: Lure };
+  discoveries: string[];
 }
 export interface Snapshot {
+  mode: Mode;
+  player: Point;
+  region: string;
+  interaction: string;
   phase: Phase;
   time: number;
   boat: Point & { yaw: number; speed: number };

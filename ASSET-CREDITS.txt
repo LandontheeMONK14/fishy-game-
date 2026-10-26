@@ -7,6 +7,10 @@ external fonts, hotlinked textures, music recordings, or GTA-derived assets.
 These original project assets are distributed under the repository's Apache-2.0
 license; see LICENSE.
 
+The expanded regional shorelines/islands, dock tackle rack, walking angler,
+equipped tackle variants and chart graphics are also original procedural work.
+No external art or remote gameplay services were added for this expansion.
+
 Runtime libraries (not art assets):
 Three.js — Three.js authors — MIT — https://github.com/mrdoob/three.js
 The installed dependency includes its upstream license. Vite, TypeScript and

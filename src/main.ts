@@ -10,6 +10,7 @@ import type { Lure, Quality, SpeciesId } from './contracts';
 const app = document.querySelector<HTMLDivElement>('#app')!;
 const viewport = document.createElement('div');
 viewport.id = 'viewport';
+viewport.tabIndex = -1;
 viewport.setAttribute('aria-label', 'Three-dimensional Stillwater lake. Drag to look; tap water to steer.');
 const overlay = document.createElement('div');
 overlay.id = 'interface';
@@ -26,6 +27,7 @@ let frame = 0;
 let previousTime = performance.now();
 let saveTimer = 0;
 let storageWarned = false;
+let canPersist = loaded.canPersist;
 const audio = new LakeAudio();
 
 function syncPause() {
@@ -37,10 +39,15 @@ function syncPause() {
 }
 
 function save() {
+  if (!canPersist) return;
   if (!persistSave(game.save) && !storageWarned) {
     storageWarned = true;
     ui.setStatus('Browser storage unavailable. Export your save from Settings before leaving.');
   }
+}
+
+function focusPlay() {
+  if (!ui.isModalOpen()) viewport.focus({ preventScroll: true });
 }
 
 const ui = new GameUI(overlay, {
@@ -53,6 +60,15 @@ const ui = new GameUI(overlay, {
       case 'keep': game.resolveCatch(true); input?.clear(); break;
       case 'release': game.resolveCatch(false); input?.clear(); break;
       case 'retrieve': game.action(); input?.clear(); break;
+      case 'interact': input?.clear(); game.interact(); break;
+      case 'shop':
+        if (game.canShop()) ui.openMenu('Tackle');
+        else ui.setStatus('Walk to the tackle rack on the dock to shop.');
+        break;
+      case 'buyRod': game.buyTackle('rod', value!); break;
+      case 'buyLure': game.buyTackle('lure', value!); break;
+      case 'equipRod': game.equipTackle('rod', value!); break;
+      case 'equipLure': game.equipTackle('lure', value!); break;
       case 'lure': game.setLure(value as Lure); break;
       case 'sell': game.sell(value === 'all' ? undefined : value as SpeciesId); break;
       case 'upgrade': game.upgrade(value as 'rod' | 'line'); break;
@@ -69,7 +85,7 @@ const ui = new GameUI(overlay, {
       case 'volume': game.save.settings.volume = Math.max(0, Math.min(1, Number(value) || 0)); break;
       case 'camera': scene?.resetCamera(); break;
       case 'dock':
-        if (game.snapshot.phase === 'aim') { game.returnToDock(); scene?.resetCamera(); ui.openMenu('market'); }
+        if (game.snapshot.phase === 'aim') { input?.clear(); game.returnToDock(); scene?.resetCamera(); }
         else ui.setStatus('Finish or retrieve your cast before returning to the dock.');
         break;
       case 'export': {
@@ -85,6 +101,7 @@ const ui = new GameUI(overlay, {
         if (!imported) { ui.setStatus('Invalid save. Your current progress is unchanged.'); break; }
         if (!window.confirm('Replace current progress with this imported save?')) break;
         input?.clear(); game = new Game(imported);
+        canPersist = true;
         scene?.setQuality(game.save.settings.quality);
         ui.setStatus('Save imported.'); break;
       }
@@ -92,6 +109,7 @@ const ui = new GameUI(overlay, {
         if (window.confirm('Permanently reset Stillwater progress? Export a backup first. Older golden-hour saves will not be touched.')) {
           input?.clear();
           game = new Game(createSave());
+          canPersist = true;
           scene?.setQuality(game.save.settings.quality);
           ui.setStatus('New fishing journal started.');
         }
@@ -100,6 +118,7 @@ const ui = new GameUI(overlay, {
     save();
     syncPause();
     ui.update(game.snapshot, game.save);
+    if (['start', 'resume', 'keep', 'release', 'retrieve', 'interact', 'dock', 'camera'].includes(action)) focusPlay();
   },
 });
 
@@ -132,11 +151,13 @@ async function boot() {
         else { manualPause = true; ui.openMenu('settings'); }
         syncPause();
       },
-      camera: () => { scene?.resetCamera(); game.aim(-game.snapshot.aimYaw); },
+      camera: () => scene?.resetCamera(),
+      interact: () => { game.interact(); save(); },
+      intent: () => game.beginInput(),
       phase: () => game.snapshot.phase,
       blocked: () => game.snapshot.paused || ui.isModalOpen(),
     });
-    ui.setStatus(loaded.warning || 'Try your first cast from the dock. Hold Cast, then release.');
+    ui.setStatus(loaded.warning || 'Your free starter rod and spinner are ready. Walk toward the boat and use E / Board.');
     syncPause();
     previousTime = performance.now();
     frame = requestAnimationFrame(tick);

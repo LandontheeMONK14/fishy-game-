@@ -1,5 +1,5 @@
 import type { Catch, Save, SpeciesId } from './contracts';
-import { QUESTS, bossUnlocked, questProgress } from './simulation';
+import { LURES, QUESTS, REGIONS, RODS, bossUnlocked, questProgress } from './simulation';
 
 export const SAVE_KEY = 'stillwater-v2';
 const SPECIES = ['perch', 'trout', 'bass', 'pike', 'king'] as const;
@@ -17,12 +17,29 @@ export function createSave(): Save {
     rod: 0, line: 0, paint: 'teal', paints: ['teal'], name: 'Angler', quests: {},
     settings: { quality: 'medium', assist: true, reducedMotion: false, volume: 0.35, muted: true },
     nextCatchId: 1,
+    tackle: { rods: ['starter'], lures: ['spinner'], rod: 'starter', lure: 'spinner' },
+    discoveries: [],
   };
 }
 
 export function validateSave(input: unknown): Save | null {
   try {
-    if (!object(input) || !keys(input, ['version', 'coins', 'inventory', 'journal', 'released', 'caught', 'rod', 'line', 'paint', 'paints', 'name', 'quests', 'settings', 'nextCatchId'])) return null;
+    if (!object(input) || !keys(input, ['version', 'coins', 'inventory', 'journal', 'released', 'caught', 'rod', 'line', 'paint', 'paints', 'name', 'quests', 'settings', 'nextCatchId', 'tackle', 'discoveries'])) return null;
+    const legacy = !Object.hasOwn(input, 'tackle') && !Object.hasOwn(input, 'discoveries');
+    const tackle = legacy ? { rods: ['starter'], lures: LURES.map(lure => lure.id), rod: 'starter', lure: 'spinner' } : input.tackle;
+    const discoveries = legacy ? [] : input.discoveries;
+    if (!object(tackle) || !keys(tackle, ['rods', 'lures', 'rod', 'lure'])
+      || !Array.isArray(tackle.rods) || tackle.rods.length < 1 || tackle.rods.length > RODS.length
+      || !tackle.rods.every(id => RODS.some(rod => rod.id === id)) || !tackle.rods.includes('starter')
+      || new Set(tackle.rods).size !== tackle.rods.length
+      || typeof tackle.rod !== 'string' || !tackle.rods.includes(tackle.rod)
+      || !Array.isArray(tackle.lures) || tackle.lures.length < 1 || tackle.lures.length > LURES.length
+      || !tackle.lures.every(id => LURES.some(lure => lure.id === id)) || !tackle.lures.includes('spinner')
+      || new Set(tackle.lures).size !== tackle.lures.length
+      || typeof tackle.lure !== 'string' || !tackle.lures.includes(tackle.lure)
+      || !Array.isArray(discoveries) || discoveries.length > REGIONS.length
+      || !discoveries.every(name => REGIONS.some(region => region.name === name))
+      || new Set(discoveries).size !== discoveries.length) return null;
     if (input.version !== 2 || !integer(input.coins, 0, 1_000_000_000)
       || !integer(input.caught, 0, MAX_COUNT) || !integer(input.released, 0, input.caught)
       || !integer(input.nextCatchId, 1, MAX_COUNT + 1) || input.nextCatchId !== input.caught + 1
@@ -78,6 +95,11 @@ export function validateSave(input: unknown): Save | null {
       inventory: save.inventory.map(c => ({ ...c } as Catch)),
       journal: Object.fromEntries(Object.entries(save.journal).map(([id, entry]) => [id, { ...entry }])),
       quests: Object.fromEntries(Object.entries(save.quests).map(([id, state]) => [id, { ...state }])),
+      tackle: {
+        rods: [...tackle.rods] as string[], lures: [...tackle.lures] as Save['tackle']['lures'],
+        rod: tackle.rod, lure: tackle.lure as Save['tackle']['lure'],
+      },
+      discoveries: [...discoveries] as string[],
     };
   } catch { return null; }
 }
@@ -91,15 +113,15 @@ export function exportSave(save: Save): string {
   if (!validated) throw new Error('Cannot export an invalid Stillwater save.');
   return JSON.stringify(validated, null, 2);
 }
-export function loadSave(): { save: Save; warning: string } {
-  // Version 2 intentionally has no migration. Never read, overwrite, or delete golden-hour-3d-v1.
+export function loadSave(): { save: Save; warning: string; canPersist: boolean } {
+  // Never read, overwrite, or delete the unrelated golden-hour-3d-v1 slot.
   try {
     const text = globalThis.localStorage.getItem(SAVE_KEY);
-    if (text === null) return { save: createSave(), warning: '' };
+    if (text === null) return { save: createSave(), warning: '', canPersist: true };
     const save = importSave(text);
-    return save ? { save, warning: '' } : { save: createSave(), warning: 'Saved data was invalid. A fresh lake was opened; autosaving will replace the invalid Stillwater save.' };
+    return save ? { save, warning: '', canPersist: true } : { save: createSave(), canPersist: false, warning: 'Saved data was invalid and has been preserved. Autosaving is disabled; export your progress or explicitly reset/import a save.' };
   } catch {
-    return { save: createSave(), warning: 'Local storage is unavailable. Export your save to keep your progress.' };
+    return { save: createSave(), canPersist: false, warning: 'Local storage is unavailable. Autosaving is disabled until you confirm a save import or reset. Export your save to keep your progress.' };
   }
 }
 export function persistSave(save: Save): boolean {

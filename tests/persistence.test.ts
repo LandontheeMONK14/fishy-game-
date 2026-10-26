@@ -25,6 +25,47 @@ describe('versioned validated saves', () => {
     expect(save.settings.volume).toBe(0.35);
     expect(createSave()).toEqual(save);
   });
+  it('starts with only free tackle and independently clones owned equipment and discoveries', () => {
+    const save = createSave();
+    expect(save.tackle).toEqual({ rods: ['starter'], lures: ['spinner'], rod: 'starter', lure: 'spinner' });
+    save.tackle.rods.push('traveler'); save.tackle.rod = 'traveler';
+    save.tackle.lures.push('fly'); save.tackle.lure = 'fly';
+    save.discoveries.push('Willow wetlands');
+    const copy = importSave(exportSave(save))!;
+    expect(copy).toEqual(save);
+    copy.tackle.rods.push('master');
+    copy.tackle.lures.push('minnow');
+    copy.discoveries.push('Crown basin');
+    expect(save.tackle.rods).toEqual(['starter', 'traveler']);
+    expect(save.tackle.lures).toEqual(['spinner', 'fly']);
+    expect(save.discoveries).toEqual(['Willow wetlands']);
+  });
+  it.each([
+    { tackle: null }, { tackle: { rods: ['starter'], lures: ['spinner'], rod: 'master', lure: 'spinner' } },
+    { tackle: { rods: ['starter'], lures: ['spinner'], rod: 'starter', lure: 'fly' } },
+    { tackle: { rods: ['starter', 'starter'], lures: ['spinner'], rod: 'starter', lure: 'spinner' } },
+    { tackle: { rods: ['starter'], lures: ['spinner', 'spinner'], rod: 'starter', lure: 'spinner' } },
+    { tackle: { rods: ['traveler'], lures: ['spinner'], rod: 'traveler', lure: 'spinner' } },
+    { tackle: { rods: ['starter'], lures: ['fly'], rod: 'starter', lure: 'fly' } },
+    { tackle: { rods: ['starter', '__proto__'], lures: ['spinner'], rod: 'starter', lure: 'spinner' } },
+    { tackle: { rods: ['starter'], lures: ['spinner'], rod: 'starter', lure: 'spinner', extra: true } },
+    { discoveries: ['Atlantis'] }, { discoveries: ['Home waters', 'Home waters'] },
+    { discoveries: null }, { discoveries: 'Home waters' },
+  ])('rejects invalid tackle/discoveries %j', fields => {
+    expect(validateSave({ ...createSave(), ...fields })).toBeNull();
+  });
+  it('migrates only complete old v2 structures without mutating or discarding upgrades', () => {
+    const legacy: Record<string, unknown> = { ...createSave(), rod: 3, line: 2, coins: 567 };
+    delete legacy.tackle; delete legacy.discoveries;
+    const before = JSON.stringify(legacy);
+    const migrated = validateSave(legacy)!;
+    expect(migrated).toMatchObject({ rod: 3, line: 2, coins: 567 });
+    expect(migrated.tackle.lures).toEqual(['spinner', 'fly', 'minnow']);
+    expect(migrated.tackle.rods).toEqual(['starter']);
+    expect(JSON.stringify(legacy)).toBe(before);
+    expect(validateSave({ ...legacy, discoveries: [] })).toBeNull();
+    expect(validateSave({ ...legacy, tackle: createSave().tackle })).toBeNull();
+  });
   it('round-trips export/import without sharing references', () => {
     const save = createSave();
     save.name = '<Angler>';
@@ -45,7 +86,11 @@ describe('versioned validated saves', () => {
     });
     const save = importSave(text)!;
     expect(save).not.toBeNull();
-    expect(JSON.parse(exportSave(save))).toEqual(JSON.parse(text));
+    expect(JSON.parse(exportSave(save))).toEqual({
+      ...JSON.parse(text),
+      tackle: { rods: ['starter'], lures: ['spinner', 'fly', 'minnow'], rod: 'starter', lure: 'spinner' },
+      discoveries: [],
+    });
     expect(catchTier(save.inventory[0])).toBe('Trophy');
     expect(mastery(save).level).toBeGreaterThanOrEqual(1);
     expect(save.inventory[0].value).toBe(51);
@@ -102,32 +147,35 @@ describe('versioned validated saves', () => {
   it('loads and persists only v2, never migrates or deletes the legacy key', () => {
     const { data, api } = storage();
     data.set('golden-hour-3d-v1', '{"legacy":true}');
-    expect(loadSave()).toEqual({ save: createSave(), warning: '' });
+    expect(loadSave()).toEqual({ save: createSave(), warning: '', canPersist: true });
     const save = createSave(); save.coins = 100;
     expect(persistSave(save)).toBe(true);
-    expect(loadSave()).toEqual({ save, warning: '' });
+    expect(loadSave()).toEqual({ save, warning: '', canPersist: true });
     expect(api.getItem.mock.calls.every(([key]) => key === SAVE_KEY)).toBe(true);
     expect(api.setItem.mock.calls.every(([key]) => key === SAVE_KEY)).toBe(true);
     expect(api.removeItem).not.toHaveBeenCalled();
     expect(data.get('golden-hour-3d-v1')).toBe('{"legacy":true}');
   });
-  it('leaves corrupted data untouched on load and warns that autosaving replaces it', () => {
+  it('leaves corrupted data untouched and explicitly disables automatic persistence', () => {
     const { data, api } = storage();
     data.set(SAVE_KEY, '{"version":1}');
     const result = loadSave();
     expect(result.save).toEqual(createSave());
     expect(result.warning).toMatch(/invalid/);
-    expect(result.warning).toMatch(/autosaving will replace/);
+    expect(result.warning).toMatch(/Autosaving is disabled/);
+    expect(result.canPersist).toBe(false);
     expect(data.get(SAVE_KEY)).toBe('{"version":1}');
     expect(api.setItem).not.toHaveBeenCalled();
     expect(api.removeItem).not.toHaveBeenCalled();
-    expect(persistSave(result.save)).toBe(true);
-    expect(importSave(data.get(SAVE_KEY)!)).toEqual(createSave());
+    if (result.canPersist) persistSave(result.save);
+    expect(data.get(SAVE_KEY)).toBe('{"version":1}');
     expect(() => exportSave({ ...createSave(), coins: -1 })).toThrow(/invalid/);
   });
   it('gracefully handles missing, blocked and quota-exhausted storage', () => {
     vi.stubGlobal('localStorage', undefined);
     expect(loadSave().warning).toMatch(/unavailable/);
+    expect(loadSave().warning).toMatch(/Autosaving is disabled until you confirm a save import or reset/);
+    expect(loadSave().canPersist).toBe(false);
     expect(persistSave(createSave())).toBe(false);
     vi.stubGlobal('localStorage', {
       getItem() { throw new Error('denied'); },
@@ -135,6 +183,16 @@ describe('versioned validated saves', () => {
     });
     expect(loadSave().save).toEqual(createSave());
     expect(loadSave().warning).not.toBe('');
+    expect(loadSave().canPersist).toBe(false);
     expect(persistSave(createSave())).toBe(false);
+  });
+  it('does not let one corrupt slot globally disable a later valid load', () => {
+    const { data } = storage();
+    data.set(SAVE_KEY, 'not json');
+    expect(loadSave().canPersist).toBe(false);
+    data.set(SAVE_KEY, exportSave(createSave()));
+    expect(loadSave().canPersist).toBe(true);
+    data.delete(SAVE_KEY);
+    expect(loadSave().canPersist).toBe(true);
   });
 });

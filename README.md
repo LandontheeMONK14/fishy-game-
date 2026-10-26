@@ -3,8 +3,8 @@
 A self-contained, fishing-first 3D browser escape: a golden-hour wilderness lake,
 a small wooden boat, and a journal waiting to be filled. Original procedural art,
 animated water, rod-focused casting, fish runs and a legendary northern catch.
-This is a compact naturalistic-stylized vertical slice, not a photorealistic or
-AAA-scale game.
+Explore six connected regions in an expanded naturalistic-stylized wilderness.
+This is a browser fishing game, not a photorealistic or AAA-scale world.
 
 ## Play locally
 
@@ -32,7 +32,12 @@ settings are enabled by this project.
 
 ## A quiet first cast
 
-1. Start at the dock. Drag the view to aim; hold **Space / Cast** to charge,
+1. Start on the walkable dock with a **free Willow rod and Copper spinner**
+   already equipped. W/S or the touch arrows walk along the dock; A/D moves
+   sideways within its rails. Walk toward the boat at the dock tip and use
+   **E / Interact** to board. On deck, walk forward and interact to take the helm;
+   interact again to leave it. Fish from the stationary deck, not the helm.
+   Drag the view to aim; hold **Space / Cast** to charge,
    release to cast. Aim into the nearby **Emerald pool** surface rings with a
    spinner. A gold precision target means the habitat and lure match: faster
    bites and a size bonus. Ordinary legal-water casts still catch fish.
@@ -44,8 +49,10 @@ settings are enabled by this project.
    Assist is enabled initially and can be changed in Settings.
 4. Inspect your catch, then explicitly **keep** or **release** it. Keeping fills
    a finite hold; release builds stewardship progress rather than giving cash.
-5. Visit the dock menu for the market, accepted fishing quests, tackle upgrades,
-   owned boat colors, boat name, journal and settings. Selling never erases records.
+5. Return to the dock, leave the helm and walk aft to disembark. Walk to the
+   visible tackle rack for rods, lures and upgrades; sell retained catches at
+   the dock. The journal, map, accepted quests and settings remain available
+   while exploring. Selling never erases records.
 
 **Explore:** W / ↑ gently accelerates forward and S / ↓ reverses; A/D and ←/→ turn
 the helm at a bounded rate. Boat travel follows its heading, independently of cast
@@ -53,9 +60,38 @@ aim, and coasts to a controlled stop when you release the controls. Tap/click le
 water to set a course; the boat turns and slows as it approaches, and land blocks
 travel. Drag to aim and look, **C** smoothly recenters the camera. The camera keeps
 a steady height and does not swing toward fish or catches; cosmetic boat bob is
-disabled by reduced motion. Touch controls provide movement, casting, reeling and
-line release without needing simultaneous finger holds. Fishing gently brakes the
-boat. Use the dock shortcut after retrieving/finishing your cast to return safely.
+disabled by reduced motion. Aiming does not steer the helm. Touch controls provide
+movement, casting, reeling and line release without needing simultaneous finger
+holds. Leaving the helm stops the boat; casting requires a stationary fishing
+position. Use the dock shortcut after
+retrieving/finishing your cast for safe recovery; it does not replace physical
+boarding/disembarking. Deck and dock movement is constrained to safe walking areas;
+this is not unrestricted swimming or island walking.
+
+**Comfort:** camera translation follows a flat anchor, not cosmetic hull bob/roll.
+Manual orbit and reset are smoothed; there is no automatic fish-follow, camera shake
+or motion blur. Pause/resume stops residual travel, and long frame gaps do not
+fast-forward navigation. Comfort varies by person; reduced motion and low quality
+are available, and you should stop playing if the motion feels uncomfortable.
+
+### Tackle and exploration
+
+The dock rack sells the Wayfarer rod (140 coins) and Crownwater rod (320 coins).
+Their maximum cast ranges are 48 m and 58 m versus the Willow's 38 m; they also
+improve fight power and line control. Existing rod/reel and line upgrades still
+contribute independently. The spinner is free; the Silver fly costs 45 coins and
+the Golden minnow 75. Owned equipment can be re-equipped without paying again;
+buying requires visiting the rack. Lure preferences affect species encounters and
+precision bonuses, not just appearance. Equipped tackle is rendered on the boat.
+
+The navigable ellipse is now 510 × 360 world units (nine times the previous water
+footprint before subtracting islands), with seven islands, six discoverable regions
+and ten feeding grounds. The Map tab shows shorelines, islands, home dock, boat
+and destinations with distances. Explore Willow wetlands, Glasswater coast,
+Frostmere reach, Crown basin and Sunken orchard beyond the home waters.
+Discoveries persist; the four-species journal still gates the Gilded King.
+Travel and casts share deterministic land boundaries; direct tap courses cannot
+route around islands automatically. Choose clear-water waypoints instead.
 
 **Pause:** Escape opens/closes the menu. Menus, window blur and a hidden tab freeze
 fishing timers. Buttons and dialogs are keyboard accessible; game shortcuts are
@@ -64,7 +100,7 @@ assisted fights, and opt-in sound with volume.
 
 ### Read the water, build a fishing story
 
-Five named feeding grounds have surface rings, baitfish activity and lure hints.
+Ten named feeding grounds have surface rings, baitfish activity and lure hints.
 Emerald pool and Sunset reeds favor spinners; Silverfin spring favors flies;
 Northern channel and the Gilded crown favor minnows. The journal lists grounds,
 discovery goals, records and mastery progress. Perch have gentle short runs, bass
@@ -94,9 +130,15 @@ save. Storage failures leave the session playable and display a warning: export
 your save in Settings before leaving. Export/import uses JSON; import is validated
 and requires confirmation before replacing progress. Reset also requires confirmation.
 In-progress casts/fights are not saved; a reload returns to the dock. This upgrade
-keeps the version-2 schema unchanged: mastery and size tiers are derived from
-existing validated fields. Earlier `stillwater-v2` exports remain importable;
-unknown fields and malformed progress are rejected rather than trusted.
+extends version 2 with validated owned/equipped tackle and regional discoveries.
+Earlier `stillwater-v2` exports remain importable: they receive a starter rod and
+all three previously available lures without charging coins. Inventory sale values,
+upgrades, coins, journal, quests and settings are preserved. Mastery and size tiers
+remain derived from existing fields. Unknown fields and malformed progress are
+rejected rather than trusted.
+If stored data is invalid, it is left untouched and autosaving is blocked.
+Export the playable session or explicitly confirm an import/reset before replacing
+the stored data; the warning is not permission to discard it.
 
 The previous chat demo's `golden-hour-3d-v1` save is **not migrated or deleted**.
 Its schema and rewards cannot be reliably reconciled with this game. Back up that
@@ -125,8 +167,11 @@ Layered ridgelines, procedural clouds, shoreline detail, feeding-ground activity
 water highlights and wakes build an AAA-inspired art direction, not AAA asset
 fidelity. Water uses stylized reflection cues, not physically traced reflections. Boat
 navigation uses collision-safe direct steering rather than automatic pathfinding.
-There is one biome, no walking RPG, multiplayer, backend, or licensed realism
-assets. Audio is synthesized ambient water/wind and fishing feedback.
+Regional scenery uses shared instanced vegetation and rocks, distance-culling and
+quality-scaled detail. Walking is limited to the dock and boat deck; there is no
+land-exploration RPG, multiplayer, backend, or licensed realism assets. The species
+roster remains four ordinary fish and the unlockable King. Audio is synthesized
+ambient water/wind and fishing feedback.
 
 Validation results and any environment-specific limits are recorded in the pull
 request; no frame-rate or universal device-compatibility claims are made.

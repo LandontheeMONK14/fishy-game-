@@ -162,6 +162,22 @@ input[type="range"] { accent-color: var(--gold); width: 140px; min-height: 32px;
 .touch-actions { display: flex; align-items: end; gap: 9px; }
 .touch-actions .cast-control { width: 78px; height: 78px; border-radius: 50%; color: #1d3537; background: linear-gradient(145deg, #f2dbaa, #d9b676); border: 3px solid #fbdfad; box-shadow: 0 4px 20px #071e274d, 0 0 0 5px #efd39a15; text-shadow: none; font-weight: 700; font-size: 13px; }
 .slack-control { font-size: 11px; min-height: 48px; }
+.interaction-actions { display: flex; justify-content: center; gap: 8px; margin-top: 12px; }
+.interaction-actions button { min-height: 44px; font-size: 12px; }
+.interact-button { flex: 1; color: var(--gold); border-color: #efd39a70; background: #efd39a0d; }
+.shop-button { font-size: 11px !important; }
+.lure-chip { max-width: 65%; overflow: hidden; text-overflow: ellipsis; }
+.lake-map { display: block; width: 100%; max-height: 340px; border: 1px solid var(--line); border-radius: 12px; background: #213c35; }
+.map-water { fill: #174b59; stroke: #b4cfac; stroke-width: 1.5; }
+.map-island { fill: #608163; stroke: #c9d8ad; stroke-width: 1; }
+.map-destination { fill: var(--gold); stroke: #173138; stroke-width: .8; }
+.map-boat { fill: #fff; stroke: #132c32; stroke-width: 1; }
+.map-player { fill: #ffd384; stroke: #132c32; stroke-width: .6; }
+.map-dock { fill: #eee3bd; }
+.map-label, .map-north { fill: #fff5d8; font: 14px "Segoe UI", sans-serif; paint-order: stroke; stroke: #12343c; stroke-width: 2px; }
+.map-north { font-size: 16px; }
+.map-legend { color: var(--muted); font-size: 11px; line-height: 1.7; margin: 12px 0 4px; }
+.rack-access, .market-access { color: var(--gold); }
 
 @media (pointer: coarse), (max-width: 680px) {
   .touch-controls { display: flex; }
@@ -196,8 +212,8 @@ input[type="range"] { accent-color: var(--gold); width: 140px; min-height: 32px;
   .context-hint { font-size: 9px; margin-top: 7px; }
   .fishing-meters { padding: 10px 12px; gap: 10px; margin-top: 10px; }
   .discovery-checklist { grid-template-columns: 1fr; }
-  .lake-toolbar [data-action="dock"] { font-size: 0; min-width: 42px; }
-  .lake-toolbar [data-action="dock"] span { font-size: 15px; }
+  .lake-toolbar [data-action="dock"] { font-size: 10px; min-width: 42px; }
+  .lake-toolbar [data-action="dock"] span { display: none; }
   .lake-header { gap: 6px; }
   .lake-identity { padding: 8px; gap: 6px; }
   .wordmark { font-size: 10px; letter-spacing: .12em; }
@@ -207,6 +223,15 @@ input[type="range"] { accent-color: var(--gold); width: 140px; min-height: 32px;
   .lake-toolbar [data-action="dock"] { min-width: 38px; }
   .coin-count { padding: 0 7px; font-size: 10px; }
   .touch-controls { left: 12px; right: 12px; }
+  .lake-toolbar [data-action="tab"][data-value="Map"] { min-width: 40px; }
+  .lake-identity { max-width: 90px; }
+  .fishing-hud { bottom: max(138px, calc(env(safe-area-inset-bottom) + 124px)); }
+  .interaction-actions { margin-top: 10px; gap: 6px; }
+  .interaction-actions button { font-size: 11px; padding: 9px 8px; }
+  .lake-notice { top: max(86px, calc(env(safe-area-inset-top) + 76px)); }
+  .dock-tabs { flex-wrap: wrap; overflow: visible; }
+  .dock-tabs button { flex: 1 0 29%; min-height: 42px; }
+  .lake-map { min-height: 220px; }
 }
 @media (max-width: 380px) {
   .steering-pad { grid-template-columns: repeat(3, 42px); grid-template-rows: repeat(2, 44px); gap: 4px; }

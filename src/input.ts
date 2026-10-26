@@ -11,6 +11,8 @@ interface InputActions {
   pick(x: number, y: number): Point | null;
   pause(): void;
   camera(): void;
+  interact?(): void;
+  intent?(): void;
   phase(): Snapshot['phase'];
   blocked(): boolean;
 }
@@ -22,6 +24,7 @@ export class GameInput {
   private abort = new AbortController();
   private pointer: { id: number; x: number; y: number; distance: number } | null = null;
   private charging = false;
+  private touchPointers = new Map<number, { control: string; target: HTMLElement }>();
 
   constructor(private canvas: HTMLCanvasElement, private actions: InputActions) {
     const options = { signal: this.abort.signal };
@@ -31,9 +34,11 @@ export class GameInput {
       if (actions.blocked()) return;
       if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.code)) event.preventDefault();
       if (event.repeat) return;
+      actions.intent?.();
       this.keys.add(event.code);
       if (event.code === 'Space') this.pressAction();
       if (event.code === 'KeyC') actions.camera();
+      if (event.code === 'KeyE') { this.clear(); actions.interact?.(); }
       this.sync();
     }, options);
     window.addEventListener('keyup', (event) => {
@@ -43,6 +48,8 @@ export class GameInput {
     }, options);
     canvas.addEventListener('pointerdown', (event) => {
       if (actions.blocked() || event.button !== 0) return;
+      if (this.pointer) return;
+      actions.intent?.();
       canvas.setPointerCapture(event.pointerId);
       this.pointer = { id: event.pointerId, x: event.clientX, y: event.clientY, distance: 0 };
     }, options);
@@ -57,39 +64,49 @@ export class GameInput {
       actions.aim(-dx * .004);
     }, options);
     canvas.addEventListener('pointerup', (event) => {
+      if (this.pointer?.id !== event.pointerId) return;
       if (this.pointer?.id === event.pointerId && this.pointer.distance < 8 && !actions.blocked()) {
         const point = actions.pick(event.clientX, event.clientY);
         if (point && actions.phase() === 'aim') actions.course(point);
       }
       this.endPointer();
     }, options);
-    canvas.addEventListener('pointercancel', () => this.clear(), options);
+    canvas.addEventListener('pointercancel', (event) => {
+      if (this.pointer?.id === event.pointerId) this.clear();
+    }, options);
     canvas.addEventListener('lostpointercapture', () => { this.pointer = null; }, options);
     document.addEventListener('pointerdown', (event) => {
       const target = (event.target as HTMLElement).closest<HTMLElement>('[data-control]');
       if (!target || actions.blocked()) return;
+      actions.intent?.();
       event.preventDefault();
       const control = target.dataset.control!;
+      this.touchPointers.set(event.pointerId, { control, target });
       this.touch.add(control);
       target.setPointerCapture(event.pointerId);
       if (control === 'action') this.pressAction();
       this.sync();
     }, options);
     const releaseTouch = (event: PointerEvent) => {
-      const target = (event.target as HTMLElement).closest<HTMLElement>('[data-control]');
-      if (!target) return;
-      const control = target.dataset.control!;
-      this.touch.delete(control);
-      if (event.type === 'pointercancel') this.clear();
-      else if (control === 'action') this.releaseAction();
+      const pointer = this.touchPointers.get(event.pointerId);
+      if (!pointer) return;
+      const { control } = pointer;
+      this.touchPointers.delete(event.pointerId);
+      if (pointer.target.hasPointerCapture(event.pointerId)) pointer.target.releasePointerCapture(event.pointerId);
+      if (![...this.touchPointers.values()].some(p => p.control === control)) this.touch.delete(control);
+      if (event.type === 'pointercancel' || event.type === 'lostpointercapture') this.clear();
+      else if (control === 'action' && !this.touch.has('action')) this.releaseAction();
       this.sync();
     };
     document.addEventListener('pointerup', releaseTouch, options);
     document.addEventListener('pointercancel', releaseTouch, options);
+    document.addEventListener('lostpointercapture', releaseTouch, options);
+    window.addEventListener('blur', () => this.clear(), options);
     // Keyboard activation of buttons is deliberate and never starts a pointer charge.
     document.addEventListener('click', (event) => {
       const target = (event.target as HTMLElement).closest<HTMLElement>('[data-control]');
       if (!target || event.detail !== 0 || actions.blocked()) return;
+      actions.intent?.();
       const control = target.dataset.control;
       if (control === 'action') {
         if (actions.phase() === 'aim') { actions.charge(); actions.release(); }
@@ -125,6 +142,11 @@ export class GameInput {
   }
   clear() {
     this.charging = false;
+    const pointers = [...this.touchPointers];
+    this.touchPointers.clear();
+    for (const [id, { target }] of pointers) {
+      if (target.hasPointerCapture(id)) target.releasePointerCapture(id);
+    }
     this.keys.clear(); this.touch.clear(); this.endPointer(); this.sync(); this.actions.cancel();
   }
   dispose() { this.clear(); this.abort.abort(); }
