@@ -48,10 +48,18 @@ export const QUESTS = [
 const PAINTS = ['teal', 'ivory', 'ember'];
 const ISLANDS = [{ x: -46, z: -20, rx: 10, rz: 8 }, { x: 42, z: 24, rx: 12, rz: 8 }];
 const STEP = 1 / 60;
+const BOAT_MAX_SPEED = 5;
+const BOAT_ACCELERATION = 2.6;
+const BOAT_BRAKING = 3.6;
+const BOAT_TURN_RATE = 1.15;
 const clamp = (n: number, min: number, max: number) => Math.max(min, Math.min(max, n));
 const finite = (n: number) => Number.isFinite(n) ? n : 0;
 const distance = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.z - b.z);
 const heading = (a: Point, b: Point) => Math.atan2(b.x - a.x, a.z - b.z);
+const angleDelta = (from: number, to: number) => Math.atan2(Math.sin(to - from), Math.cos(to - from));
+const approach = (value: number, target: number, amount: number) =>
+  value < target ? Math.min(value + amount, target) : Math.max(value - amount, target);
+const EMPTY_BOAT_CONTROLS: Controls = { move: 0, turn: 0, steer: 0, reel: false, slack: false };
 const discovered = (save: Save) => Object.values(save.journal).filter(entry => entry && entry.count > 0).length;
 
 export function questProgress(save: Save, id: string): number {
@@ -107,6 +115,7 @@ export class Game {
   private looseTime = 0;
   private runSeed = 0;
   private lastBehavior = '';
+  private collisionStopped = false;
   private pending: Catch | null = null;
 
   constructor(public save: Save, private random: () => number = Math.random) {
@@ -126,7 +135,6 @@ export class Game {
     this.snapshot.phase = phase;
     this.phaseTime = 0;
     this.blockedInput = true;
-    this.snapshot.boat.speed = 0;
   }
   private refreshTarget(): void {
     const s = this.snapshot;
@@ -183,7 +191,6 @@ export class Game {
   cancelInput(): void {
     this.blockedInput = true;
     this.course = null;
-    this.snapshot.boat.speed = 0;
     if (this.snapshot.phase === 'charge') this.reset('Cast cancelled.');
   }
   private reset(message: string): void {
@@ -211,7 +218,6 @@ export class Game {
     if (point === null) { this.course = null; return; }
     if (!segmentLegal(this.snapshot.boat, point, 1.2)) {
       this.course = null;
-      this.snapshot.boat.speed = 0;
       this.snapshot.message = 'That route crosses land. Choose clear water.';
       return;
     }
@@ -242,10 +248,10 @@ export class Game {
   }
   private tick(input: Controls): void {
     const s = this.snapshot;
+    const boatInput = s.phase === 'aim' ? input : EMPTY_BOAT_CONTROLS;
     s.time += STEP;
     this.phaseTime += STEP;
     if (s.phase === 'aim') {
-      this.moveBoat(input);
       this.refreshTarget();
     } else if (s.phase === 'charge') {
       s.charge = clamp(this.phaseTime / 1.4, 0, 1);
@@ -274,34 +280,45 @@ export class Game {
       s.biteRemaining = Math.max(0, 2.5 - this.phaseTime);
       if (s.biteRemaining <= 1e-9) this.reset('The fish slipped away. Another cast awaits.');
     } else if (s.phase === 'fight') this.fight(input);
+    this.moveBoat(boatInput);
   }
   private moveBoat(input: Controls): void {
     const s = this.snapshot;
-    let dx = Math.sin(s.aimYaw) * input.move + Math.cos(s.aimYaw) * input.turn;
-    let dz = -Math.cos(s.aimYaw) * input.move + Math.sin(s.aimYaw) * input.turn;
     if (input.move || input.turn) this.course = null;
-    let remaining = Infinity;
+    let desiredSpeed = input.move * BOAT_MAX_SPEED;
     if (this.course) {
-      remaining = distance(s.boat, this.course);
-      if (remaining < 0.01) { this.course = null; s.boat.speed = 0; return; }
-      dx = (this.course.x - s.boat.x) / remaining;
-      dz = (this.course.z - s.boat.z) / remaining;
+      const remaining = distance(s.boat, this.course);
+      if (remaining < 0.75) {
+        this.course = null;
+        desiredSpeed = 0;
+      } else {
+        const error = angleDelta(s.boat.yaw, heading(s.boat, this.course));
+        s.boat.yaw += clamp(error, -BOAT_TURN_RATE * STEP, BOAT_TURN_RATE * STEP);
+        const stoppingSpeed = Math.sqrt(2 * BOAT_BRAKING * Math.max(0, remaining - 0.35));
+        desiredSpeed = Math.min(BOAT_MAX_SPEED, stoppingSpeed) * Math.max(0, Math.cos(error));
+      }
+    } else {
+      s.boat.yaw += input.turn * BOAT_TURN_RATE * STEP;
     }
-    const magnitude = Math.hypot(dx, dz);
-    if (magnitude === 0) { s.boat.speed = 0; return; }
-    const travel = Math.min(6 * STEP * Math.min(1, magnitude), remaining);
-    const next = { x: s.boat.x + dx / magnitude * travel, z: s.boat.z + dz / magnitude * travel };
+    s.boat.yaw = Math.atan2(Math.sin(s.boat.yaw), Math.cos(s.boat.yaw));
+    const braking = desiredSpeed === 0 || s.boat.speed * desiredSpeed < 0 || Math.abs(desiredSpeed) < Math.abs(s.boat.speed);
+    const rate = braking ? BOAT_BRAKING : BOAT_ACCELERATION;
+    s.boat.speed = approach(s.boat.speed, desiredSpeed, rate * STEP);
+    if (Math.abs(s.boat.speed) < 1e-4) s.boat.speed = 0;
+    const next = {
+      x: s.boat.x + Math.sin(s.boat.yaw) * s.boat.speed * STEP,
+      z: s.boat.z - Math.cos(s.boat.yaw) * s.boat.speed * STEP,
+    };
     if (!segmentLegal(s.boat, next, 1.2)) {
       this.course = null;
       s.boat.speed = 0;
-      s.message = 'Shallow water ahead — the boat stops safely.';
+      if (!this.collisionStopped) s.message = 'Shallow water ahead — the boat stops safely.';
+      this.collisionStopped = true;
       return;
     }
-    s.boat.yaw = heading(s.boat, next);
+    this.collisionStopped = false;
     s.boat.x = next.x;
     s.boat.z = next.z;
-    s.boat.speed = travel / STEP;
-    if (travel >= remaining) this.course = null;
   }
   private chooseSpecies(): SpeciesId {
     const { target, lure } = this.snapshot;

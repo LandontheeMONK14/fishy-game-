@@ -178,25 +178,25 @@ describe('lake geometry and boats', () => {
     expect(habitatAt({ x: 0, z: -45 })).toBe('Far north');
     expect(habitatAt({ x: 100, z: 0 })).toBe('Shore');
   });
-  it('moves camera-relative at at most six units per second, even diagonally', () => {
+  it('accelerates to a bounded speed and steers independently from cast aim', () => {
     const game = new Game(createSave());
     tick(game, 1, input({ move: 1, turn: 1 }));
-    expect(Math.hypot(game.snapshot.boat.x, game.snapshot.boat.z - 30)).toBeCloseTo(6, 6);
-    expect(game.snapshot.boat.speed).toBeCloseTo(6, 6);
+    expect(game.snapshot.boat.speed).toBeCloseTo(2.6, 6);
+    expect(game.snapshot.boat.yaw).toBeCloseTo(1.15, 2);
+    const yaw = game.snapshot.boat.yaw;
     game.aim(Math.PI / 2);
-    const x = game.snapshot.boat.x;
     tick(game, 1, input({ move: 1 }));
-    expect(game.snapshot.boat.x - x).toBeCloseTo(6, 6);
+    expect(game.snapshot.boat.yaw).toBe(yaw);
+    expect(game.snapshot.boat.speed).toBe(5);
   });
-  it('stops at the shore and refuses direct routes through islands', () => {
+  it('settles near a course destination and refuses direct routes through islands', () => {
     const game = new Game(createSave());
     game.setCourse({ x: -65, z: 20 });
     tick(game, 15);
-    expect(game.snapshot.boat.x).toBeCloseTo(-65, 5);
-    expect(game.snapshot.boat.z).toBeCloseTo(20, 5);
+    expect(Math.hypot(game.snapshot.boat.x + 65, game.snapshot.boat.z - 20)).toBeLessThan(0.75);
+    expect(game.snapshot.boat.speed).toBe(0);
     game.setCourse({ x: -30, z: -40 });
     tick(game, 10);
-    expect(game.snapshot.boat.x).toBeCloseTo(-65, 5);
     expect(game.snapshot.message).toMatch(/crosses land/);
     game.returnToDock();
     tick(game, 0.02);
@@ -318,6 +318,57 @@ describe('physical fights, catches, and progression', () => {
     tick(game, 0.2, input({ reel: true }));
     expect(Math.hypot(game.snapshot.fish.x - target.x, game.snapshot.fish.z - target.z)).toBeCloseTo(0.64);
     expect(game.snapshot.distance).toBeCloseTo(Math.hypot(game.snapshot.fish.x - boat.x, game.snapshot.fish.z - boat.z));
+  });
+
+  describe('comfortable boat handling', () => {
+    it('accelerates smoothly and gives the same motion across frame partitions', () => {
+      const a = new Game(createSave());
+      const b = new Game(createSave());
+      tick(a, 2, input({ move: 1 }));
+      for (let i = 0; i < 120; i++) tick(b, 1 / 60, input({ move: 1 }));
+      expect(a.snapshot.boat).toEqual(b.snapshot.boat);
+      expect(a.snapshot.boat.speed).toBe(5);
+
+      const launch = new Game(createSave());
+      tick(launch, 0.2, input({ move: 1 }));
+      expect(launch.snapshot.boat.speed).toBeGreaterThan(0);
+      expect(launch.snapshot.boat.speed).toBeLessThan(1);
+    });
+
+    it('keeps helm movement independent from cast aim and bounds turning per step', () => {
+      const game = new Game(createSave());
+      game.aim(Math.PI / 2);
+      tick(game, 1 / 60, input({ move: 1 }));
+      expect(game.snapshot.boat.yaw).toBe(0);
+      expect(game.snapshot.boat.x).toBeCloseTo(0);
+      expect(game.snapshot.boat.z).toBeLessThan(30);
+
+      const before = game.snapshot.boat.yaw;
+      tick(game, 1 / 60, input({ turn: 1 }));
+      expect(game.snapshot.boat.yaw - before).toBeGreaterThan(0);
+      expect(game.snapshot.boat.yaw - before).toBeLessThanOrEqual(1.15 / 60);
+    });
+
+    it('settles at a course destination without overshooting or oscillating', () => {
+      const game = new Game(createSave());
+      game.setCourse({ x: 0, z: 20 });
+      tick(game, 8);
+      expect(Math.hypot(game.snapshot.boat.x, game.snapshot.boat.z - 20)).toBeLessThan(1);
+      expect(game.snapshot.boat.speed).toBe(0);
+      const stopped = { ...game.snapshot.boat };
+      tick(game, 1);
+      expect(game.snapshot.boat).toEqual(stopped);
+    });
+
+    it('stops safely at the shoreline without crossing the collision margin', () => {
+      const game = new Game(createSave());
+      game.snapshot.boat.z = -58;
+      tick(game, 3, input({ move: 1 }));
+      const stopped = { ...game.snapshot.boat };
+      tick(game, 1, input({ move: 1 }));
+      expect(game.snapshot.boat).toEqual(stopped);
+      expect(isWater(game.snapshot.boat)).toBe(true);
+    });
   });
   it('gives species genuinely different cyclic fight signatures with a safe tell before every burst', () => {
     const signatures = new Set<string>();

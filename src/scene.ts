@@ -5,7 +5,6 @@ import { HOTSPOTS, bossUnlocked, hotspotAt, isWater } from './simulation';
 const TAU = Math.PI * 2;
 const UP = new THREE.Vector3(0, 1, 0);
 const SPECIES: SpeciesId[] = ['perch', 'trout', 'bass', 'pike', 'king'];
-const CAMERA_ISLANDS = [{ x: -46, z: -20, rx: 14, rz: 12 }, { x: 42, z: 24, rx: 16, rz: 12 }];
 
 function random(seed: number): () => number {
   return () => {
@@ -1361,32 +1360,19 @@ export class LakeScene {
     }
 
     const cameraYaw = yaw + this.orbitYaw;
-    const cinematic = !save.settings.reducedMotion;
-    const distance = cinematic && snapshot.phase === 'land' ? 14.8 : cinematic && kingFight ? 19.5 : 17.5;
-    const height = (cinematic && snapshot.phase === 'land' ? 9.4 : cinematic && kingFight ? 12.2 : 10.8) + this.orbitPitch * 11;
     this.cameraGoal.set(
-      snapshot.boat.x + Math.sin(cameraYaw) * distance + Math.cos(cameraYaw) * 3.3,
-      height,
-      snapshot.boat.z + Math.cos(cameraYaw) * distance - Math.sin(cameraYaw) * 3.3,
+      snapshot.boat.x + Math.sin(cameraYaw) * 17.5 + Math.cos(cameraYaw) * 3.3,
+      10.8 + this.orbitPitch * 11,
+      snapshot.boat.z + Math.cos(cameraYaw) * 17.5 - Math.sin(cameraYaw) * 3.3,
     );
-    // Keep the camera inside the open lake instead of passing through shoreline trees.
+    // Keep the view inside the lake without changing its height or introducing a camera roll.
     const cameraRadius = Math.hypot(this.cameraGoal.x / 81, this.cameraGoal.z / 56);
     if (cameraRadius > 1) {
       this.cameraGoal.x /= cameraRadius;
       this.cameraGoal.z /= cameraRadius;
-      this.cameraGoal.y += Math.min((cameraRadius - 1) * 16, 9);
-    }
-    for (const island of CAMERA_ISLANDS) {
-      if (Math.hypot((this.cameraGoal.x - island.x) / island.rx, (this.cameraGoal.z - island.z) / island.rz) < 1.2) this.cameraGoal.y = Math.max(this.cameraGoal.y, 17);
     }
     this.lookGoal.set(snapshot.boat.x - Math.sin(cameraYaw) * 8, 4.5, snapshot.boat.z - Math.cos(cameraYaw) * 8);
-    if (snapshot.phase === 'land') {
-      if (cinematic) this.lookGoal.lerp(this.trophy.position, 0.45);
-    } else if (showFish && cinematic) {
-      this.p.set(snapshot.fish.x, 0.4, snapshot.fish.z);
-      this.lookGoal.lerp(this.p, Math.min(0.24, snapshot.distance / 160));
-    }
-    const smoothing = snapshot.paused ? 0 : save.settings.reducedMotion ? 1 : 1 - Math.exp(-step * 3);
+    const smoothing = snapshot.paused ? 0 : 1 - Math.exp(-step * 3);
     if (!this.cameraReady) {
       this.camera.position.copy(this.cameraGoal);
       this.look.copy(this.lookGoal);
@@ -1436,7 +1422,6 @@ export class LakeScene {
   resetCamera(): void {
     this.orbitYaw = 0;
     this.orbitPitch = 0;
-    this.cameraReady = false;
   }
 
   pickWater(clientX: number, clientY: number): Point | null {
