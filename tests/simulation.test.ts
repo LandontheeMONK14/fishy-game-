@@ -1,13 +1,38 @@
 import { describe, expect, it } from 'vitest';
 import { EMPTY_CONTROLS } from '../src/contracts';
 import type { Controls, Save, SpeciesId } from '../src/contracts';
-import { createSave, validateSave } from '../src/persistence';
-import { Game, HOTSPOTS, QUESTS, UPGRADE_COSTS, bossUnlocked, catchTier, habitatAt, hotspotAt, isCastLegal, isWater, mastery } from '../src/simulation';
+import { createSave as freshSave, validateSave } from '../src/persistence';
+import { DOCK, Game, HOTSPOTS, LURES, REGIONS, RODS, WORLD, QUESTS, UPGRADE_COSTS, bossUnlocked, catchTier, habitatAt, hotspotAt, isCastLegal, isWater, mastery } from '../src/simulation';
 
 const neutral = EMPTY_CONTROLS;
 const input = (values: Partial<Controls>): Controls => ({ ...neutral, ...values });
-function tick(game: Game, seconds: number, controls = neutral) { game.update(seconds, controls); }
+// Existing fight fixtures own the original three lures, like migrated anglers.
+function createSave(): Save {
+  const save = freshSave();
+  save.tackle.lures = ['spinner', 'fly', 'minnow'];
+  return save;
+}
+function tick(game: Game, seconds: number, controls = neutral) {
+  if (!Number.isFinite(seconds) || seconds <= 0) { game.update(seconds, controls); return; }
+  while (seconds > 1e-9) {
+    const frame = Math.min(seconds, 0.25);
+    game.update(frame, controls);
+    seconds -= frame;
+  }
+}
+function board(game: Game) {
+  if (game.snapshot.mode === 'dock') game.interact();
+  expect(game.snapshot.mode).toBe('deck');
+}
+function helm(game: Game) {
+  board(game);
+  tick(game, 1 / 60);
+  tick(game, 1.3, input({ move: 1 }));
+  game.interact();
+  expect(game.snapshot.mode).toBe('helm');
+}
 function cast(game: Game, charge = 0.7) {
+  if (game.snapshot.mode === 'dock') board(game);
   game.startCharge();
   tick(game, charge);
   game.releaseCast();
@@ -41,6 +66,7 @@ function hotspotFight(species: SpeciesId, assist = true): Game {
   if (species === 'king') discover(save);
   const spot = HOTSPOTS.find(candidate => candidate.species === species)!;
   const game = new Game(save, () => 0.5);
+  board(game);
   game.snapshot.boat.x = spot.x; game.snapshot.boat.z = spot.z + 10;
   game.setLure(spot.lure); cast(game, 0); hook(game);
   expect(game.snapshot.fish.species).toBe(species);
@@ -49,7 +75,7 @@ function hotspotFight(species: SpeciesId, assist = true): Game {
 
 describe('precision habitats and shared progression', () => {
   it('exposes readable reachable habitat targets and matches lure without changing habitat rules', () => {
-    expect(HOTSPOTS).toHaveLength(5);
+    expect(HOTSPOTS.length).toBeGreaterThanOrEqual(10);
     expect(HOTSPOTS.find(spot => spot.species === 'bass')).toMatchObject({ x: 0, z: 12, radius: 5 });
     for (const spot of HOTSPOTS) {
       expect(spot.name.length).toBeGreaterThan(3);
@@ -60,6 +86,7 @@ describe('precision habitats and shared progression', () => {
     expect(hotspotAt({ x: 0, z: 17.01 })).toBeUndefined();
     expect(hotspotAt({ x: NaN, z: 12 })).toBeUndefined();
     const game = new Game(createSave(), () => 0.5);
+    board(game);
     game.startCharge(); tick(game, 0.4);
     expect(game.snapshot.target.z).toBeCloseTo(12);
     expect(game.snapshot.precision).toBe(true);
@@ -124,6 +151,7 @@ describe('precision habitats and shared progression', () => {
     game.resolveCatch(true); game.resolveCatch(true);
     expect(game.save.inventory).toEqual([caught]);
     expect(game.save.caught).toBe(1);
+    game.returnToDock();
     expect(game.sell()).toBe(caught.value);
     expect(game.sell()).toBe(0);
     game.returnToDock();
@@ -164,7 +192,7 @@ describe('precision habitats and shared progression', () => {
 describe('lake geometry and boats', () => {
   it('has elliptical shores, islands and exact segment collision including tangency', () => {
     expect(isWater({ x: 0, z: 0 })).toBe(true);
-    for (const point of [{ x: 85, z: 0 }, { x: 0, z: -60 }, { x: -46, z: -20 }, { x: 42, z: 24 }, { x: NaN, z: 0 }]) expect(isWater(point)).toBe(false);
+    for (const point of [{ x: WORLD.rx, z: 0 }, { x: 0, z: -WORLD.rz }, { x: -46, z: -20 }, { x: 42, z: 24 }, { x: NaN, z: 0 }]) expect(isWater(point)).toBe(false);
     expect(isCastLegal({ x: -65, z: -20 }, { x: -25, z: -20 })).toBe(false);
     expect(isCastLegal({ x: 20, z: 24 }, { x: 65, z: 24 })).toBe(false);
     expect(isCastLegal({ x: -65, z: -12 }, { x: -25, z: -12 })).toBe(false);
@@ -176,10 +204,11 @@ describe('lake geometry and boats', () => {
     expect(habitatAt({ x: 40, z: 0 })).toBe('Eastern shallows');
     expect(habitatAt({ x: 0, z: -25 })).toBe('Northern depths');
     expect(habitatAt({ x: 0, z: -45 })).toBe('Far north');
-    expect(habitatAt({ x: 100, z: 0 })).toBe('Shore');
+    expect(habitatAt({ x: WORLD.rx + 1, z: 0 })).toBe('Shore');
   });
   it('accelerates to a bounded speed and steers independently from cast aim', () => {
     const game = new Game(createSave());
+    helm(game);
     tick(game, 1, input({ move: 1, turn: 1 }));
     expect(game.snapshot.boat.speed).toBeCloseTo(2.6, 6);
     expect(game.snapshot.boat.yaw).toBeCloseTo(1.15, 2);
@@ -191,6 +220,9 @@ describe('lake geometry and boats', () => {
   });
   it('settles near a course destination and refuses direct routes through islands', () => {
     const game = new Game(createSave());
+    helm(game);
+    game.setCourse({ x: 0, z: 20 });
+    tick(game, 8);
     game.setCourse({ x: -65, z: 20 });
     tick(game, 15);
     expect(Math.hypot(game.snapshot.boat.x + 65, game.snapshot.boat.z - 20)).toBeLessThan(0.75);
@@ -199,14 +231,16 @@ describe('lake geometry and boats', () => {
     tick(game, 10);
     expect(game.snapshot.message).toMatch(/crosses land/);
     game.returnToDock();
+    helm(game);
     tick(game, 0.02);
-    tick(game, 30, input({ move: -1 }));
+    tick(game, 40, input({ move: -1 }));
     expect(isWater(game.snapshot.boat)).toBe(true);
-    expect(game.snapshot.boat.z).toBeLessThan(59);
+    expect(game.snapshot.boat.z).toBeLessThan(WORLD.rz - 1.2);
     expect(game.snapshot.boat.speed).toBe(0);
   });
   it('blocks island-crossing casts despite a legal endpoint', () => {
     const game = new Game(createSave());
+    board(game);
     game.snapshot.boat.x = -63; game.snapshot.boat.z = -20;
     game.aim(Math.PI / 2);
     game.startCharge(); tick(game, 1.4);
@@ -221,6 +255,7 @@ describe('lake geometry and boats', () => {
 describe('deterministic casts and input boundaries', () => {
   it('has a visible arc then nibbles and a generous true bite window', () => {
     const game = new Game(createSave(), () => 0);
+    board(game);
     game.startCharge(); tick(game, 0.7);
     expect(game.snapshot.charge).toBeCloseTo(0.5);
     expect(game.snapshot.target.z).toBeCloseTo(6);
@@ -242,6 +277,7 @@ describe('deterministic casts and input boundaries', () => {
   it('uses fixed steps regardless of frame partition', () => {
     const a = new Game(createSave(), () => 0.3);
     const b = new Game(createSave(), () => 0.3);
+    board(a); board(b);
     a.startCharge(); b.startCharge();
     tick(a, 1.2);
     for (let i = 0; i < 72; i++) tick(b, 1 / 60);
@@ -252,6 +288,7 @@ describe('deterministic casts and input boundaries', () => {
   });
   it('cancels charges but preserves fights and freezes on pause', () => {
     const game = new Game(createSave(), () => 0.5);
+    board(game);
     game.startCharge(); tick(game, 0.5); game.cancelInput();
     expect(game.snapshot.phase).toBe('aim');
     expect(game.snapshot.charge).toBe(0);
@@ -283,6 +320,7 @@ describe('deterministic casts and input boundaries', () => {
   });
   it('action retracts cast/wait, hooks bite only, never keeps a landed fish', () => {
     const game = new Game(createSave(), () => 0);
+    board(game);
     game.action(); expect(game.snapshot.phase).toBe('aim');
     game.startCharge(); game.releaseCast(); game.action();
     expect(game.snapshot.phase).toBe('aim');
@@ -320,16 +358,301 @@ describe('physical fights, catches, and progression', () => {
     expect(game.snapshot.distance).toBeCloseTo(Math.hypot(game.snapshot.fish.x - boat.x, game.snapshot.fish.z - boat.z));
   });
 
+  describe('walking, tackle and the expanded connected world', () => {
+    it('accepts immediate intentional movement after cancelInput then interaction without a neutral frame', () => {
+      const game = new Game(freshSave());
+      game.cancelInput();
+      game.interact();
+      expect(game.snapshot.mode).toBe('deck');
+      game.update(0.25, input({ move: 1 }));
+      expect(game.snapshot.player.z).toBeLessThan(0.8);
+      tick(game, 1, input({ move: 1 }));
+      expect(game.snapshot.player.z).toBeLessThan(-0.5);
+      game.cancelInput();
+      game.interact();
+      expect(game.snapshot.mode).toBe('helm');
+      game.update(0.25, input({ move: 1 }));
+      expect(game.snapshot.boat.speed).toBeGreaterThan(0);
+      expect(game.snapshot.boat.z).toBeLessThan(30);
+      game.cancelInput();
+      game.interact();
+      const front = game.snapshot.player.z;
+      game.update(0.25, input({ move: -1 }));
+      expect(game.snapshot.mode).toBe('deck');
+      expect(game.snapshot.player.z).toBeGreaterThan(front);
+    });
+    it('rearms fresh physical intent without allowing held inputs across a hook transition', () => {
+      const game = new Game(createSave(), () => 0);
+      cast(game); bite(game);
+      game.action();
+      tick(game, 0.25, input({ reel: true }));
+      expect(game.snapshot.stamina).toBe(1);
+      game.beginInput();
+      tick(game, 0.25, input({ reel: true }));
+      expect(game.snapshot.stamina).toBeLessThan(1);
+      game.setPaused(true);
+      const paused = structuredClone(game.snapshot);
+      game.beginInput();
+      tick(game, 0.25, input({ reel: true }));
+      expect(game.snapshot).toEqual(paused);
+      game.setPaused(false);
+      const stamina = game.snapshot.stamina;
+      tick(game, 0.25, input({ reel: true }));
+      expect(game.snapshot.stamina).toBe(stamina);
+      game.beginInput();
+      tick(game, 0.25, input({ reel: true }));
+      expect(game.snapshot.stamina).toBeLessThan(stamina);
+    });
+
+    it('starts on the dock, constrains walking, boards contextually and uses a local deck', () => {
+      const game = new Game(freshSave());
+      expect(game.snapshot).toMatchObject({ mode: 'dock', player: { x: -3, z: 32 }, boat: { x: 0, z: 30 } });
+      game.startCharge(); game.setCourse({ x: 0, z: 0 });
+      expect(game.snapshot.phase).toBe('aim');
+      tick(game, 10, input({ move: -1, turn: 1 }));
+      expect(game.snapshot.player).toEqual({ x: -1.6, z: 44 });
+      expect(game.snapshot.boat.z).toBe(30);
+      game.interact();
+      expect(game.snapshot.mode).toBe('dock');
+      tick(game, 10, input({ move: 1, turn: -1 }));
+      expect(game.snapshot.player).toEqual({ x: -4.4, z: 29 });
+      game.interact();
+      expect(game.snapshot.mode).toBe('deck');
+      expect(game.snapshot.player).toEqual({ x: 0, z: 0.8 });
+      tick(game, 4, input({ move: 1, turn: 1 }));
+      expect(game.snapshot.player).toEqual({ x: 0.65, z: -1.3 });
+      expect(game.snapshot.boat.speed).toBe(0);
+      expect(game.snapshot.interaction).toMatch(/helm/);
+      game.interact();
+      expect(game.snapshot.mode).toBe('helm');
+      game.startCharge();
+      expect(game.snapshot.phase).toBe('aim');
+      tick(game, 2, input({ move: 1 }));
+      expect(game.snapshot.boat.z).toBeLessThan(30);
+      game.interact();
+      expect(game.snapshot.mode).toBe('deck');
+      expect(game.snapshot.boat.speed).toBe(0);
+      tick(game, 3, input({ move: -1 }));
+      game.interact();
+      expect(game.snapshot.mode).toBe('deck');
+      game.returnToDock(); board(game);
+      game.interact();
+      expect(game.snapshot.mode).toBe('dock');
+    });
+
+    it('gates tackle and upgrade purchases by rack location, not pause state', () => {
+      const game = new Game(freshSave());
+      game.save.coins = 1000;
+      expect(game.canShop()).toBe(true);
+      game.setPaused(true);
+      for (const rod of RODS.slice(1)) {
+        const before = game.save.coins;
+        expect(game.buyTackle('rod', rod.id)).toBe(true);
+        expect(game.save.coins).toBe(before - rod.cost);
+        expect(game.buyTackle('rod', rod.id)).toBe(false);
+      }
+      for (const lure of LURES.slice(1)) expect(game.buyTackle('lure', lure.id)).toBe(true);
+      expect(game.buyTackle('rod', 'spinner')).toBe(false);
+      expect(game.buyTackle('lure', 'master')).toBe(false);
+      expect(game.buyTackle('lure', '__proto__')).toBe(false);
+      expect(game.equipTackle('rod', 'master')).toBe(true);
+      expect(game.equipTackle('lure', 'fly')).toBe(true);
+      expect(game.snapshot.lure).toBe('fly');
+      expect(validateSave(game.save)).toEqual(game.save);
+      game.setPaused(false);
+      game.snapshot.player.z = 43;
+      expect(game.canShop()).toBe(false);
+      const before = game.save.coins;
+      expect(game.upgrade('line')).toBe(false);
+      expect(game.buyPaint('ivory')).toBe(false);
+      expect(game.sell()).toBe(0);
+      expect(game.save.coins).toBe(before);
+      game.snapshot.player.z = 30;
+      board(game);
+      expect(game.canShop()).toBe(false);
+      expect(game.buyTackle('lure', 'minnow')).toBe(false);
+    });
+
+    it('rejects unowned equipment and makes rod range, power and control physically useful', () => {
+      const game = new Game(freshSave());
+      expect(game.equipTackle('rod', 'master')).toBe(false);
+      expect(game.equipTackle('lure', 'minnow')).toBe(false);
+      game.setLure('fly');
+      expect(game.snapshot.lure).toBe('spinner');
+      const novice = hotspotFight('bass');
+      const expert = hotspotFight('bass');
+      expert.save.tackle.rods.push('master');
+      // Equip in the aim phase, never by mutating an active fight.
+      const rangeGame = new Game(freshSave());
+      rangeGame.save.coins = 1000;
+      expect(rangeGame.buyTackle('rod', 'master')).toBe(true);
+      expect(rangeGame.equipTackle('rod', 'master')).toBe(true);
+      board(rangeGame);
+      rangeGame.startCharge(); tick(rangeGame, 1.4);
+      expect(Math.hypot(rangeGame.snapshot.target.x - rangeGame.snapshot.boat.x, rangeGame.snapshot.target.z - rangeGame.snapshot.boat.z)).toBeCloseTo(58);
+      expect(rangeGame.equipTackle('rod', 'starter')).toBe(false);
+      expert.save.tackle.rod = 'master';
+      tick(novice, 0.5, input({ reel: true }));
+      tick(expert, 0.5, input({ reel: true }));
+      expect(expert.snapshot.stamina).toBeLessThan(novice.snapshot.stamina);
+      expect(expert.snapshot.tension).toBeLessThan(novice.snapshot.tension);
+    });
+
+    it('cannot remotely sell a loaded hold and can transact from a paused dock menu', () => {
+      const game = landed();
+      const value = game.snapshot.catch!.value;
+      game.resolveCatch(true);
+      const offshore = structuredClone(game.save);
+      expect(game.sell()).toBe(0);
+      expect(game.save).toEqual(offshore);
+      game.returnToDock();
+      game.snapshot.player.z = 43;
+      expect(game.canShop()).toBe(false);
+      game.setPaused(true);
+      expect(game.sell()).toBe(value);
+      expect(game.sell()).toBe(0);
+      game.snapshot.player.z = 35;
+      game.save.coins = 1000;
+      expect(game.upgrade('line')).toBe(true);
+      expect(game.buyPaint('ivory')).toBe(true);
+      expect(game.buyTackle('lure', 'fly')).toBe(false);
+      expect(validateSave(game.save)).not.toBeNull();
+    });
+
+    it('keeps journal quest claims available afloat independently of shopping', () => {
+      const save = freshSave();
+      discover(save);
+      const game = new Game(save);
+      helm(game);
+      game.acceptQuest('lake-explorer');
+      expect(game.canShop()).toBe(false);
+      expect(game.claimQuest('lake-explorer')).toBe(true);
+      expect(game.claimQuest('lake-explorer')).toBe(false);
+      expect(game.save.coins).toBe(QUESTS[2].reward);
+      expect(validateSave(game.save)).not.toBeNull();
+    });
+
+    it('holds a collision stop without retry creep and permits reversing away', () => {
+      const game = new Game(freshSave());
+      helm(game);
+      game.snapshot.boat.z = -WORLD.rz + 2;
+      tick(game, 3, input({ move: 1 }));
+      const stopped = { ...game.snapshot.boat };
+      tick(game, 10, input({ move: 1 }));
+      expect(game.snapshot.boat).toEqual(stopped);
+      tick(game, 1, input({ move: -1 }));
+      expect(game.snapshot.boat.z).toBeGreaterThan(stopped.z);
+      expect(game.snapshot.boat.speed).toBeLessThan(0);
+    });
+
+    it('treats the visible dock as solid for water, casts, and boat-margin navigation', () => {
+      expect(WORLD.dock).toBe(DOCK);
+      expect(isWater({ x: -3, z: 35 })).toBe(false);
+      expect(isWater({ x: 0, z: 30 })).toBe(true);
+      for (const z of [DOCK.minZ, 35, DOCK.maxZ]) {
+        expect(isCastLegal({ x: -10, z }, { x: 5, z })).toBe(false);
+        expect(isCastLegal({ x: 5, z }, { x: -10, z })).toBe(false);
+      }
+      expect(isCastLegal({ x: -10, z: 28.9 }, { x: 5, z: 28.9 })).toBe(true);
+      expect(isCastLegal({ x: 0, z: 30 }, { x: 0, z: 60 })).toBe(true);
+      const game = new Game(freshSave());
+      helm(game);
+      game.setCourse({ x: -10, z: 30 });
+      expect(game.snapshot.message).toMatch(/crosses land/);
+      tick(game, 1);
+      expect(game.snapshot.boat).toMatchObject({ x: 0, z: 30, speed: 0 });
+      game.snapshot.boat.yaw = -Math.PI / 2;
+      tick(game, 3, input({ move: 1 }));
+      expect(game.snapshot.boat.x).toBeGreaterThan(DOCK.maxX + 1.2);
+      const stopped = { ...game.snapshot.boat };
+      tick(game, 5, input({ move: 1 }));
+      expect(game.snapshot.boat).toEqual(stopped);
+      game.interact();
+      game.aim(-Math.PI / 2);
+      game.startCharge();
+      game.releaseCast();
+      expect(game.snapshot.phase).toBe('aim');
+      expect(game.snapshot.mode).toBe('deck');
+      expect(game.snapshot.message).toMatch(/blocked/);
+    });
+
+    it('caps a stalled frame, stops residual travel on pause, and never slides during a cast', () => {
+      const game = new Game(freshSave());
+      helm(game);
+      const start = game.snapshot.time;
+      game.update(60, input({ move: 1 }));
+      expect(game.snapshot.time - start).toBeCloseTo(0.25);
+      expect(game.snapshot.boat.speed).toBeLessThan(1);
+      tick(game, 2, input({ move: 1 }));
+      game.setPaused(true);
+      expect(game.snapshot.boat.speed).toBe(0);
+      const stopped = { ...game.snapshot.boat };
+      game.setPaused(false);
+      tick(game, 2);
+      expect(game.snapshot.boat).toEqual(stopped);
+      game.interact();
+      game.startCharge(); tick(game, 0.7);
+      expect(game.snapshot.mode).toBe('fish');
+      const player = { ...game.snapshot.player };
+      const boat = { ...game.snapshot.boat };
+      game.releaseCast();
+      tick(game, 0.5, input({ move: 1, turn: 1 }));
+      expect(game.snapshot.player).toEqual(player);
+      expect(game.snapshot.boat).toEqual(boat);
+      game.action();
+      expect(game.snapshot.mode).toBe('deck');
+    });
+
+    it('reaches every region through connected legal water and casts into every regional hotspot', () => {
+      const game = new Game(createSave(), () => 0.5);
+      discover(game.save);
+      helm(game);
+      const navigate = (point: { x: number; z: number }) => {
+        game.setCourse(point);
+        for (let i = 0; i < 1000; i++) {
+          tick(game, 0.25);
+          expect(isWater(game.snapshot.boat)).toBe(true);
+          if (Math.hypot(game.snapshot.boat.x - point.x, game.snapshot.boat.z - point.z) < 0.8 && game.snapshot.boat.speed === 0) return;
+        }
+        throw new Error(`Could not reach ${point.x},${point.z}: ${game.snapshot.message}`);
+      };
+      for (const spot of [HOTSPOTS[0], ...HOTSPOTS.slice(5)]) {
+        navigate({ x: 0, z: 0 });
+        navigate({ x: spot.x, z: spot.z + 10 });
+        game.interact();
+        game.setLure(spot.lure);
+        cast(game, 0);
+        expect(game.snapshot.legalTarget).toBe(true);
+        expect(game.snapshot.hotspot).toBe(spot.name);
+        hook(game);
+        expect(game.snapshot.fish.species).toBe(spot.species);
+        win(game);
+        game.resolveCatch(false);
+        expect(game.snapshot.mode).toBe('deck');
+        expect(game.snapshot.interaction).toMatch(/helm/);
+        game.interact();
+        expect(game.snapshot.mode).toBe('helm');
+      }
+      expect(game.save.discoveries.slice().sort()).toEqual(REGIONS.map(region => region.name).sort());
+      const before = [...game.save.discoveries];
+      tick(game, 1);
+      expect(game.save.discoveries).toEqual(before);
+      expect(validateSave(game.save)).not.toBeNull();
+    });
+  });
+
   describe('comfortable boat handling', () => {
     it('accelerates smoothly and gives the same motion across frame partitions', () => {
       const a = new Game(createSave());
       const b = new Game(createSave());
+      helm(a); helm(b);
       tick(a, 2, input({ move: 1 }));
       for (let i = 0; i < 120; i++) tick(b, 1 / 60, input({ move: 1 }));
       expect(a.snapshot.boat).toEqual(b.snapshot.boat);
       expect(a.snapshot.boat.speed).toBe(5);
 
       const launch = new Game(createSave());
+      helm(launch);
       tick(launch, 0.2, input({ move: 1 }));
       expect(launch.snapshot.boat.speed).toBeGreaterThan(0);
       expect(launch.snapshot.boat.speed).toBeLessThan(1);
@@ -337,6 +660,7 @@ describe('physical fights, catches, and progression', () => {
 
     it('keeps helm movement independent from cast aim and bounds turning per step', () => {
       const game = new Game(createSave());
+      helm(game);
       game.aim(Math.PI / 2);
       tick(game, 1 / 60, input({ move: 1 }));
       expect(game.snapshot.boat.yaw).toBe(0);
@@ -351,6 +675,7 @@ describe('physical fights, catches, and progression', () => {
 
     it('settles at a course destination without overshooting or oscillating', () => {
       const game = new Game(createSave());
+      helm(game);
       game.setCourse({ x: 0, z: 20 });
       tick(game, 8);
       expect(Math.hypot(game.snapshot.boat.x, game.snapshot.boat.z - 20)).toBeLessThan(1);
@@ -362,7 +687,8 @@ describe('physical fights, catches, and progression', () => {
 
     it('stops safely at the shoreline without crossing the collision margin', () => {
       const game = new Game(createSave());
-      game.snapshot.boat.z = -58;
+      helm(game);
+      game.snapshot.boat.z = -WORLD.rz + 2;
       tick(game, 3, input({ move: 1 }));
       const stopped = { ...game.snapshot.boat };
       tick(game, 1, input({ move: 1 }));
@@ -494,6 +820,7 @@ describe('physical fights, catches, and progression', () => {
     expect(game.save.inventory).toEqual([caught]);
     expect(game.save.journal[caught.species]).toEqual({ count: 1, record: caught.weight });
     expect(game.save.coins).toBe(0);
+    game.returnToDock();
     expect(game.sell('perch')).toBe(0);
     expect(game.sell(caught.species)).toBe(caught.value);
     expect(game.sell()).toBe(0);
@@ -663,6 +990,7 @@ describe('physical fights, catches, and progression', () => {
     ['pike', 0, -15, 'minnow'], ['bass', 0, 30, 'spinner'],
   ] as const)('selects %s only in the right habitat and lure', (id, x, z, lure) => {
     const game = new Game(createSave(), () => 0);
+    board(game);
     game.snapshot.boat.x = x; game.snapshot.boat.z = z;
     game.setLure(lure); cast(game, 0); hook(game);
     expect(game.snapshot.fish.species).toBe(id);
@@ -670,6 +998,7 @@ describe('physical fights, catches, and progression', () => {
   it('requires four discoveries for the King, telegraphs all three phases and permits retries forever', () => {
     const save = createSave();
     const game = new Game(save, () => 0.5);
+    board(game);
     game.snapshot.boat.z = -30; game.setLure('minnow'); cast(game, 0); hook(game);
     expect(game.snapshot.fish.species).toBe('pike');
     expect(bossUnlocked(save)).toBe(false);

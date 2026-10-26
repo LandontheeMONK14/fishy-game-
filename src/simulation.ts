@@ -1,12 +1,54 @@
 import type { Catch, Controls, Lure, Point, Save, Snapshot, SpeciesId } from './contracts';
 
 export const UPGRADE_COSTS = [90, 180, 320] as const;
+export const DOCK = { minX: -4.4, maxX: -1.6, minZ: 29, maxZ: 44 } as const;
+export const WORLD = {
+  rx: 255, rz: 180,
+  dock: DOCK,
+  islands: [
+    { x: -46, z: -20, rx: 10, rz: 8 }, { x: 42, z: 24, rx: 12, rz: 8 },
+    { x: -116, z: -63, rx: 20, rz: 14 }, { x: 112, z: -66, rx: 17, rz: 12 },
+    { x: -94, z: 86, rx: 18, rz: 12 }, { x: 104, z: 94, rx: 21, rz: 13 },
+    { x: 52, z: -121, rx: 13, rz: 10 },
+  ],
+};
+export const RODS = [
+  { id: 'starter', name: 'Willow rod', cost: 0, range: 38, power: 1, control: 1, description: 'A balanced first companion for the home waters.' },
+  { id: 'traveler', name: 'Wayfarer rod', cost: 140, range: 48, power: 1.12, control: 1.18, description: 'Reach distant pools with a forgiving, steady line.' },
+  { id: 'master', name: 'Crownwater rod', cost: 320, range: 58, power: 1.3, control: 1.4, description: 'Long casts and strong recovery for the wild reaches.' },
+] as const;
+export const LURES: { id: Lure; name: string; cost: number; description: string }[] = [
+  { id: 'spinner', name: 'Copper spinner', cost: 0, description: 'Flashing copper attracts perch and bass.' },
+  { id: 'fly', name: 'Silver fly', cost: 45, description: 'A delicate presentation for cool-water trout.' },
+  { id: 'minnow', name: 'Golden minnow', cost: 75, description: 'Tempts deep-water pike and the Gilded King.' },
+];
+export const REGIONS = [
+  { name: 'Home waters', x: 0, z: 20 },
+  { name: 'Willow wetlands', x: -165, z: 0 },
+  { name: 'Glasswater coast', x: 165, z: 0 },
+  { name: 'Frostmere reach', x: 0, z: -100 },
+  { name: 'Crown basin', x: 0, z: -150 },
+  { name: 'Sunken orchard', x: 0, z: 115 },
+] as const;
+export function regionAt(point: Point): string {
+  if (point.z < -125) return 'Crown basin';
+  if (point.z < -70) return 'Frostmere reach';
+  if (point.z > 75) return 'Sunken orchard';
+  if (point.x < -85) return 'Willow wetlands';
+  if (point.x > 85) return 'Glasswater coast';
+  return 'Home waters';
+}
 export const HOTSPOTS: { name: string; x: number; z: number; radius: number; lure: Lure; species: SpeciesId }[] = [
   { name: 'Emerald pool', x: 0, z: 12, radius: 5, lure: 'spinner', species: 'bass' },
   { name: 'Sunset reeds', x: -36, z: 2, radius: 6, lure: 'spinner', species: 'perch' },
   { name: 'Silverfin spring', x: 36, z: -2, radius: 6, lure: 'fly', species: 'trout' },
   { name: 'Northern channel', x: 0, z: -27, radius: 6, lure: 'minnow', species: 'pike' },
   { name: 'Gilded crown', x: 0, z: -46, radius: 5, lure: 'minnow', species: 'king' },
+  { name: 'Willow lanterns', x: -165, z: 0, radius: 9, lure: 'spinner', species: 'perch' },
+  { name: 'Glasswater falls', x: 165, z: 0, radius: 9, lure: 'fly', species: 'trout' },
+  { name: 'Frostmere trench', x: 0, z: -100, radius: 9, lure: 'minnow', species: 'pike' },
+  { name: 'Crownwater throne', x: 0, z: -150, radius: 8, lure: 'minnow', species: 'king' },
+  { name: 'Orchard reflections', x: 0, z: 115, radius: 10, lure: 'spinner', species: 'bass' },
 ];
 const BASE_WEIGHT: Record<SpeciesId, number> = { perch: 0.6, trout: 1.1, bass: 1.8, pike: 3.2, king: 8 };
 const FIGHT_PROFILES = {
@@ -46,7 +88,6 @@ export const QUESTS = [
 ] as const;
 
 const PAINTS = ['teal', 'ivory', 'ember'];
-const ISLANDS = [{ x: -46, z: -20, rx: 10, rz: 8 }, { x: 42, z: 24, rx: 12, rz: 8 }];
 const STEP = 1 / 60;
 const BOAT_MAX_SPEED = 5;
 const BOAT_ACCELERATION = 2.6;
@@ -68,16 +109,38 @@ export function questProgress(save: Save, id: string): number {
 
 function water(point: Point, margin = 0): boolean {
   return Number.isFinite(point.x) && Number.isFinite(point.z)
-    && (point.x / (85 - margin)) ** 2 + (point.z / (60 - margin)) ** 2 < 1
-    && ISLANDS.every(i => ((point.x - i.x) / (i.rx + margin)) ** 2 + ((point.z - i.z) / (i.rz + margin)) ** 2 > 1);
+    && (point.x / (WORLD.rx - margin)) ** 2 + (point.z / (WORLD.rz - margin)) ** 2 < 1
+    && !(point.x >= DOCK.minX - margin && point.x <= DOCK.maxX + margin
+      && point.z >= DOCK.minZ - margin && point.z <= DOCK.maxZ + margin)
+    && WORLD.islands.every(i => ((point.x - i.x) / (i.rx + margin)) ** 2 + ((point.z - i.z) / (i.rz + margin)) ** 2 > 1);
 }
 
 export function isWater(point: Point): boolean { return water(point); }
 
+function crossesDock(from: Point, to: Point, margin: number): boolean {
+  let entry = 0;
+  let exit = 1;
+  for (const [origin, delta, min, max] of [
+    [from.x, to.x - from.x, DOCK.minX - margin, DOCK.maxX + margin],
+    [from.z, to.z - from.z, DOCK.minZ - margin, DOCK.maxZ + margin],
+  ]) {
+    if (delta === 0) {
+      if (origin < min || origin > max) return false;
+    } else {
+      const first = (min - origin) / delta;
+      const last = (max - origin) / delta;
+      entry = Math.max(entry, Math.min(first, last));
+      exit = Math.min(exit, Math.max(first, last));
+      if (entry > exit) return false;
+    }
+  }
+  return true;
+}
+
 function segmentLegal(from: Point, to: Point, margin = 0): boolean {
-  if (!water(from, margin) || !water(to, margin)) return false;
+  if (!water(from, margin) || !water(to, margin) || crossesDock(from, to, margin)) return false;
   // The lake is convex. Only island intersections need an interior segment test.
-  return ISLANDS.every(i => {
+  return WORLD.islands.every(i => {
     const x = (from.x - i.x) / (i.rx + margin);
     const z = (from.z - i.z) / (i.rz + margin);
     const dx = (to.x - from.x) / (i.rx + margin);
@@ -116,21 +179,91 @@ export class Game {
   private runSeed = 0;
   private lastBehavior = '';
   private collisionStopped = false;
+  private collisionHeading = 0;
+  private collisionDirection = 0;
   private pending: Catch | null = null;
 
   constructor(public save: Save, private random: () => number = Math.random) {
     this.snapshot = {
+      mode: 'dock', player: { x: -3, z: 32 }, region: 'Home waters', interaction: '',
       phase: 'aim', time: 0, boat: { x: 0, z: 30, yaw: 0, speed: 0 }, aimYaw: 0,
       target: { x: 0, z: 20 }, legalTarget: true, charge: 0,
       float: { x: 0, z: 20, y: 0 }, fish: { x: 0, z: 20, y: -0.4, species: 'bass', heading: 0 },
       tension: 0, stamina: 1, distance: 10, runDirection: 0, behavior: 'rest',
-      bossPhase: 0, biteRemaining: 0, catch: null, lure: 'spinner', message: 'Find your water. Hold to cast.',
+      bossPhase: 0, biteRemaining: 0, catch: null, lure: save.tackle.lure, message: 'Welcome to Stillwater. Walk to the dock tip to board.',
       habitat: 'Open water', paused: false, precision: false, hotspot: null, lureHint: '', surgeIn: 0,
     };
     this.refreshTarget();
+    this.refreshInteraction();
   }
 
   private roll(): number { return clamp(finite(this.random()), 0, 0.999999); }
+  private rod(): typeof RODS[number] {
+    return RODS.find(rod => rod.id === this.save.tackle.rod) ?? RODS[0];
+  }
+  canShop(): boolean {
+    return this.snapshot.mode === 'dock' && distance(this.snapshot.player, { x: -3, z: 35 }) <= 4;
+  }
+  private nearDock(): boolean {
+    return distance(this.snapshot.boat, { x: 0, z: 30 }) <= 4.5 && Math.abs(this.snapshot.boat.speed) < 0.1;
+  }
+  private refreshInteraction(): void {
+    const s = this.snapshot;
+    s.interaction = s.mode === 'dock'
+      ? distance(s.player, { x: -3, z: 30 }) <= 2.6 ? 'Interact · board boat' : this.canShop() ? 'Market & tackle shop nearby' : 'Walk to the dock tip to board'
+      : s.mode === 'helm' ? 'Interact · leave helm'
+      : s.mode === 'fish' ? 'Finish or retrieve your cast to walk'
+      : s.player.z < -0.5 ? 'Interact · take helm'
+      : s.player.z > 0.5 && this.nearDock() ? 'Interact · step onto dock'
+      : 'Walk forward to helm · hold cast to fish';
+  }
+  interact(): void {
+    const s = this.snapshot;
+    if (s.paused || s.phase !== 'aim') return;
+    const previousMode = s.mode;
+    if (s.mode === 'dock' && distance(s.player, { x: -3, z: 30 }) <= 2.6 && this.nearDock()) {
+      s.mode = 'deck'; s.player = { x: 0, z: 0.8 };
+      s.message = 'Aboard. Walk forward to take the helm, or hold to cast.';
+    } else if (s.mode === 'helm') {
+      s.mode = 'deck'; s.player = { x: 0, z: -0.8 };
+      s.message = 'Helm released. Walk the deck or hold to cast.';
+    } else if (s.mode === 'deck' && s.player.z < -0.5) {
+      s.mode = 'helm';
+      s.message = 'At the helm. Steer with movement controls or choose a clear-water course.';
+    } else if (s.mode === 'deck' && s.player.z > 0.5 && this.nearDock()) {
+      s.mode = 'dock'; s.player = { x: -3, z: 30 };
+      s.message = 'Back on the dock. The market and tackle display are just ahead.';
+    }
+    this.course = null;
+    s.boat.speed = 0;
+    if (s.mode !== previousMode) this.blockedInput = false;
+    this.refreshInteraction();
+  }
+  buyTackle(kind: 'rod' | 'lure', id: string): boolean {
+    if (!this.canShop() || (kind !== 'rod' && kind !== 'lure')) return false;
+    const item = kind === 'rod' ? RODS.find(rod => rod.id === id) : LURES.find(lure => lure.id === id);
+    const owned: string[] = kind === 'rod' ? this.save.tackle.rods : this.save.tackle.lures;
+    if (!item || owned.includes(id) || this.save.coins < item.cost) return false;
+    this.save.coins -= item.cost;
+    if (kind === 'rod') this.save.tackle.rods.push(id);
+    else this.save.tackle.lures.push(id as Lure);
+    this.snapshot.message = `${item.name} purchased. Equip it in your tackle box.`;
+    return true;
+  }
+  equipTackle(kind: 'rod' | 'lure', id: string): boolean {
+    if (this.snapshot.phase !== 'aim' || (kind !== 'rod' && kind !== 'lure')) return false;
+    if (kind === 'rod') {
+      if (!RODS.some(rod => rod.id === id) || !this.save.tackle.rods.includes(id)) return false;
+      this.save.tackle.rod = id;
+    } else {
+      if (!LURES.some(lure => lure.id === id) || !this.save.tackle.lures.includes(id as Lure)) return false;
+      this.save.tackle.lure = id as Lure;
+      this.snapshot.lure = id as Lure;
+    }
+    this.refreshTarget();
+    this.snapshot.message = `${id} equipped.`;
+    return true;
+  }
   private transition(phase: Snapshot['phase']): void {
     this.snapshot.phase = phase;
     this.phaseTime = 0;
@@ -138,7 +271,7 @@ export class Game {
   }
   private refreshTarget(): void {
     const s = this.snapshot;
-    const range = 10 + 28 * s.charge;
+    const range = 10 + (this.rod().range - 10) * s.charge;
     s.target = { x: s.boat.x + Math.sin(s.aimYaw) * range, z: s.boat.z - Math.cos(s.aimYaw) * range };
     s.legalTarget = isCastLegal(s.boat, s.target);
     s.habitat = habitatAt(s.target);
@@ -154,6 +287,7 @@ export class Game {
     this.cancelInput();
     this.snapshot.paused = paused;
     this.accumulator = 0;
+    this.snapshot.boat.speed = 0;
   }
   aim(deltaYaw: number): void {
     if (this.snapshot.paused || !['aim', 'charge'].includes(this.snapshot.phase)) return;
@@ -161,12 +295,16 @@ export class Game {
     this.refreshTarget();
   }
   startCharge(): void {
-    if (this.snapshot.paused || this.snapshot.phase !== 'aim') return;
+    if (this.snapshot.paused || this.snapshot.phase !== 'aim'
+      || !['deck', 'fish'].includes(this.snapshot.mode) || Math.abs(this.snapshot.boat.speed) > 0.05) return;
+    this.snapshot.mode = 'fish';
+    this.snapshot.boat.speed = 0;
     this.course = null;
     this.snapshot.charge = 0;
     this.transition('charge');
     this.snapshot.message = 'Hold for range; release to cast.';
     this.refreshTarget();
+    this.refreshInteraction();
   }
   releaseCast(): void {
     const s = this.snapshot;
@@ -191,7 +329,11 @@ export class Game {
   cancelInput(): void {
     this.blockedInput = true;
     this.course = null;
+    this.snapshot.boat.speed = 0;
     if (this.snapshot.phase === 'charge') this.reset('Cast cancelled.');
+  }
+  beginInput(): void {
+    if (!this.snapshot.paused) this.blockedInput = false;
   }
   private reset(message: string): void {
     this.pending = null;
@@ -202,19 +344,17 @@ export class Game {
     this.snapshot.bossPhase = 0;
     this.snapshot.behavior = 'rest';
     this.snapshot.surgeIn = 0;
+    if (this.snapshot.mode === 'fish') this.snapshot.mode = 'deck';
     this.transition('aim');
     this.snapshot.message = message;
     this.refreshTarget();
+    this.refreshInteraction();
   }
   setLure(lure: Lure): void {
-    if (this.snapshot.phase === 'aim' && ['spinner', 'fly', 'minnow'].includes(lure)) {
-      this.snapshot.lure = lure;
-      this.refreshTarget();
-      this.snapshot.message = `${lure[0].toUpperCase()}${lure.slice(1)} equipped.`;
-    }
+    this.equipTackle('lure', lure);
   }
   setCourse(point: Point | null): void {
-    if (this.snapshot.paused || this.snapshot.phase !== 'aim') return;
+    if (this.snapshot.paused || this.snapshot.phase !== 'aim' || this.snapshot.mode !== 'helm') return;
     if (point === null) { this.course = null; return; }
     if (!segmentLegal(this.snapshot.boat, point, 1.2)) {
       this.course = null;
@@ -227,10 +367,15 @@ export class Game {
     if (this.snapshot.phase !== 'aim') return;
     this.course = null;
     this.snapshot.boat = { x: 0, z: 30, yaw: 0, speed: 0 };
+    this.collisionStopped = false;
     this.snapshot.aimYaw = 0;
+    this.snapshot.mode = 'dock';
+    this.snapshot.player = { x: -3, z: 32 };
+    this.snapshot.region = 'Home waters';
     this.cancelInput();
     this.refreshTarget();
     this.snapshot.message = 'Back at the dock.';
+    this.refreshInteraction();
   }
 
   update(dt: number, controls: Controls): void {
@@ -240,7 +385,7 @@ export class Game {
       steer: clamp(finite(controls.steer), -1, 1), reel: controls.reel === true, slack: controls.slack === true,
     };
     if (!input.move && !input.turn && !input.steer && !input.reel && !input.slack) this.blockedInput = false;
-    this.accumulator += Math.min(dt, 60);
+    this.accumulator += Math.min(dt, 0.25);
     while (this.accumulator + 1e-10 >= STEP) {
       this.accumulator -= STEP;
       this.tick(this.blockedInput ? { move: 0, turn: 0, steer: 0, reel: false, slack: false } : input);
@@ -248,7 +393,7 @@ export class Game {
   }
   private tick(input: Controls): void {
     const s = this.snapshot;
-    const boatInput = s.phase === 'aim' ? input : EMPTY_BOAT_CONTROLS;
+    const boatInput = s.phase === 'aim' && s.mode === 'helm' ? input : EMPTY_BOAT_CONTROLS;
     s.time += STEP;
     this.phaseTime += STEP;
     if (s.phase === 'aim') {
@@ -280,7 +425,22 @@ export class Game {
       s.biteRemaining = Math.max(0, 2.5 - this.phaseTime);
       if (s.biteRemaining <= 1e-9) this.reset('The fish slipped away. Another cast awaits.');
     } else if (s.phase === 'fight') this.fight(input);
-    this.moveBoat(boatInput);
+    if (s.mode === 'helm' && s.phase === 'aim') this.moveBoat(boatInput);
+    else {
+      s.boat.speed = 0;
+      if (s.phase === 'aim' && (s.mode === 'dock' || s.mode === 'deck')) {
+        const speed = s.mode === 'dock' ? 2.8 : 1.4;
+        const magnitude = Math.max(1, Math.hypot(input.turn, input.move));
+        s.player.x = clamp(s.player.x + input.turn / magnitude * speed * STEP, s.mode === 'dock' ? -4.4 : -0.65, s.mode === 'dock' ? -1.6 : 0.65);
+        s.player.z = clamp(s.player.z - input.move / magnitude * speed * STEP, s.mode === 'dock' ? 29 : -1.3, s.mode === 'dock' ? 44 : 1.3);
+      }
+    }
+    s.region = regionAt(s.boat);
+    if (s.mode !== 'dock' && s.phase === 'aim' && !this.save.discoveries.includes(s.region)) {
+      this.save.discoveries.push(s.region);
+      s.message += ` Discovered ${s.region}! Your voyage is recorded in the journal.`;
+    }
+    this.refreshInteraction();
   }
   private moveBoat(input: Controls): void {
     const s = this.snapshot;
@@ -301,6 +461,12 @@ export class Game {
       s.boat.yaw += input.turn * BOAT_TURN_RATE * STEP;
     }
     s.boat.yaw = Math.atan2(Math.sin(s.boat.yaw), Math.cos(s.boat.yaw));
+    // Do not repeatedly accelerate into the same obstruction while a key is held.
+    if (this.collisionStopped && Math.sign(desiredSpeed) === this.collisionDirection
+      && Math.abs(angleDelta(this.collisionHeading, s.boat.yaw)) < 0.15) {
+      s.boat.speed = 0;
+      return;
+    }
     const braking = desiredSpeed === 0 || s.boat.speed * desiredSpeed < 0 || Math.abs(desiredSpeed) < Math.abs(s.boat.speed);
     const rate = braking ? BOAT_BRAKING : BOAT_ACCELERATION;
     s.boat.speed = approach(s.boat.speed, desiredSpeed, rate * STEP);
@@ -314,9 +480,11 @@ export class Game {
       s.boat.speed = 0;
       if (!this.collisionStopped) s.message = 'Shallow water ahead — the boat stops safely.';
       this.collisionStopped = true;
+      this.collisionHeading = s.boat.yaw;
+      this.collisionDirection = Math.sign(desiredSpeed);
       return;
     }
-    this.collisionStopped = false;
+    if (s.boat.speed !== 0) this.collisionStopped = false;
     s.boat.x = next.x;
     s.boat.z = next.z;
   }
@@ -382,8 +550,8 @@ export class Game {
     const slack = input.slack;
     const reel = input.reel && !slack;
     const assist = this.save.settings.assist;
-    const resistance = 1 + this.save.line * 0.2 + (assist ? 0.25 : 0);
-    const power = 1 + this.save.rod * 0.22 + mastery(this.save).level * 0.03;
+    const resistance = (1 + this.save.line * 0.2 + (assist ? 0.25 : 0)) * this.rod().control;
+    const power = (1 + this.save.rod * 0.22 + mastery(this.save).level * 0.03) * this.rod().power;
     let pressure = rest ? -0.025 : profile.surge;
     if (reel) pressure += rest ? 0.04 : 0.24;
     if (slack) pressure -= rest ? 0.15 : 0.42;
@@ -435,7 +603,7 @@ export class Game {
   resolveCatch(keep: boolean): void {
     if (this.snapshot.paused || this.snapshot.phase !== 'land' || !this.pending) return;
     if (keep && this.save.inventory.length >= 30) {
-      this.snapshot.message = 'The hold is full (30 fish). Release this catch or sell fish first.';
+      this.snapshot.message = 'The hold is full (30 fish). Release this catch, then visit the dock market.';
       return;
     }
     const caught = this.pending;
@@ -448,6 +616,7 @@ export class Game {
     this.reset(`${keep ? 'Catch kept. Sell at the market when ready.' : 'Released gently. Extra mastery earned; no coins were awarded.'} ${mastery(this.save).title} · mastery ${mastery(this.save).progress}/${mastery(this.save).goal}.`);
   }
   sell(species?: SpeciesId): number {
+    if (this.snapshot.mode !== 'dock') return 0;
     if (species !== undefined && !['perch', 'trout', 'bass', 'pike', 'king'].includes(species)) return 0;
     const selling = this.save.inventory.filter(c => species === undefined || c.species === species);
     const value = selling.reduce((sum, c) => sum + c.value, 0);
@@ -457,7 +626,7 @@ export class Game {
     return value;
   }
   upgrade(kind: 'rod' | 'line'): boolean {
-    if (kind !== 'rod' && kind !== 'line') return false;
+    if (!this.canShop() || (kind !== 'rod' && kind !== 'line')) return false;
     const level = this.save[kind];
     if (level >= 3 || this.save.coins < UPGRADE_COSTS[level]) return false;
     this.save.coins -= UPGRADE_COSTS[level];
@@ -465,7 +634,7 @@ export class Game {
     return true;
   }
   buyPaint(color: string): boolean {
-    if (!PAINTS.includes(color) || this.save.paints.includes(color) || this.save.coins < 70) return false;
+    if (!this.canShop() || !PAINTS.includes(color) || this.save.paints.includes(color) || this.save.coins < 70) return false;
     this.save.coins -= 70;
     this.save.paints.push(color);
     return true;

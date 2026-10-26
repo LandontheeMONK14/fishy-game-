@@ -1,6 +1,6 @@
 import { SPECIES } from './contracts';
 import type { Save, Snapshot } from './contracts';
-import { HOTSPOTS, QUESTS, UPGRADE_COSTS, bossUnlocked, catchTier, mastery, questProgress } from './simulation';
+import { HOTSPOTS, LURES, RODS, WORLD, QUESTS, UPGRADE_COSTS, bossUnlocked, catchTier, mastery, questProgress, regionAt } from './simulation';
 
 export interface UICallbacks {
   onAction(action: string, value?: string): void;
@@ -8,7 +8,7 @@ export interface UICallbacks {
 }
 
 type Modal = 'welcome' | 'menu' | 'catch' | 'error' | null;
-const TABS = ['Market', 'Tackle', 'Journal', 'Quests', 'Settings'];
+const TABS = ['Map', 'Market', 'Tackle', 'Journal', 'Quests', 'Settings'];
 const HINTS: Record<Snapshot['phase'], string> = {
   aim: 'Hold Space / Cast, then release · Drag to aim',
   charge: 'Release Space / Cast when your target reaches a matching ring',
@@ -50,6 +50,7 @@ export class GameUI {
   private readonly touch: HTMLElement;
   private readonly pauseButton: HTMLButtonElement;
   private readonly actionButton: HTMLButtonElement;
+  private readonly interactionButton: HTMLButtonElement;
   private modal: Modal = null;
   private tab = 'Market';
   private snapshot?: Snapshot;
@@ -70,9 +71,10 @@ export class GameUI {
         <nav class="lake-toolbar" aria-label="Lake tools">
           <span class="coin-count" data-testid="coins" aria-label="Coins">0</span>
           <button type="button" class="journal-shortcut" data-action="tab" data-value="Journal" aria-label="Open journal"><span aria-hidden="true">▤</span> <span class="journal-count">0 / 4</span></button>
-          <button type="button" data-action="dock">Dock <span aria-hidden="true">↗</span></button>
+          <button type="button" data-action="tab" data-value="Map" aria-label="Open lake map">Map</button>
+          <button type="button" data-action="dock" aria-label="Recovery: return safely to the dock" title="Recovery: return safely to the dock">Dock <span aria-hidden="true">↗</span></button>
           <button type="button" data-action="pause" class="pause-button" aria-label="Pause game">Ⅱ</button>
-          <button type="button" data-action="menu" data-testid="menu" aria-label="Open dock menu">☰</button>
+          <button type="button" data-action="menu" data-testid="menu" aria-label="Open lake guide and menu">☰</button>
         </nav>
       </header>
       <div class="lake-pause" hidden>PAUSED <span>Escape to return to the water</span></div>
@@ -88,6 +90,7 @@ export class GameUI {
           <div class="meter-item" data-meter="stamina" hidden><label for="fish-stamina">FISH STAMINA</label><progress id="fish-stamina" max="1" value="0"></progress></div>
         </div>
         <p class="context-hint"></p>
+        <div class="interaction-actions"><button type="button" class="interact-button" data-action="interact"></button><button type="button" class="shop-button" data-action="shop">Tackle rack</button></div>
         <button type="button" class="retrieve-button" data-action="retrieve" hidden>Retrieve lure</button>
       </section>
       <div class="touch-controls" aria-label="Touch controls">
@@ -116,6 +119,7 @@ export class GameUI {
     this.touch = root.querySelector('.touch-controls')!;
     this.pauseButton = root.querySelector('.pause-button')!;
     this.actionButton = root.querySelector('[data-control="action"]')!;
+    this.interactionButton = root.querySelector('[data-action="interact"]')!;
     const options = { signal: this.abort.signal };
     root.addEventListener('click', this.onClick, options);
     root.addEventListener('change', this.onChange, options);
@@ -131,19 +135,27 @@ export class GameUI {
     this.snapshot = snapshot;
     this.save = save;
     this.text(this.coins, `${save.coins.toLocaleString()} ◈`);
-    this.text(this.location, snapshot.habitat || 'Stillwater Lake');
+    this.text(this.location, `${snapshot.region} · ${snapshot.mode}`);
     this.text(this.journalCount, `${SPECIES.filter(s => s.id !== 'king' && save.journal[s.id]).length} / 4`);
     const fight = snapshot.phase === 'fight';
     const king = fight && snapshot.fish.species === 'king';
     const behavior = snapshot.behavior === 'tell' ? 'SURGE INCOMING' : snapshot.behavior === 'run' ? 'THE RUN' : snapshot.behavior === 'jump' ? 'THE LEAP' : 'THE FIGHT';
     const phases = { aim: '01 · FIND YOUR WATER', charge: '02 · MAKE YOUR CAST', cast: '03 · LET IT SETTLE', wait: '03 · READ THE WATER', bite: '04 · SET THE HOOK', fight: behavior, land: '06 · THE DAY’S CATCH' };
     this.text(this.phase, fight ? `${king ? `GILDED KING · PHASE ${Math.max(1, snapshot.bossPhase)} / 3 · ` : ''}${behavior} · ${snapshot.distance.toFixed(1)} m` : phases[snapshot.phase]);
-    this.text(this.hint, HINTS[snapshot.phase]);
+    const travelling = snapshot.phase === 'aim' && snapshot.mode !== 'fish';
+    const travelHint = snapshot.mode === 'dock' ? 'W / S walk along the dock · Boat tip at z 30 · E to board'
+      : snapshot.mode === 'helm' ? 'W / S throttle · A / D steer · E leave helm to walk on deck'
+        : 'W / S walk the deck · Bow: E helm · Space fish · Aft: E disembark near a dock';
+    this.text(this.hint, travelling ? travelHint : HINTS[snapshot.phase]);
+    if (travelling) this.text(this.phase, snapshot.mode === 'helm' ? 'AT THE HELM · EXPLORE THE LAKE' : snapshot.mode === 'dock' ? 'ON THE DOCK · YOUR JOURNEY STARTS HERE' : 'ON DECK · WALK, HELM OR FISH');
+    this.text(this.interactionButton, `${snapshot.interaction || 'Explore the lake'} · E`);
+    this.interactionButton.disabled = snapshot.phase !== 'aim';
+    this.root.querySelector<HTMLButtonElement>('.shop-button')!.disabled = !this.nearRack() || snapshot.phase !== 'aim';
     this.text(this.message, snapshot.message);
     const habitat = snapshot.hotspot || snapshot.habitat || 'Open water';
     this.text(this.root.querySelector('.habitat-chip')!, habitat);
     const lureButton = this.root.querySelector<HTMLButtonElement>('.lure-chip')!;
-    this.text(lureButton, `${snapshot.lure[0].toUpperCase()}${snapshot.lure.slice(1)} ↗`);
+    this.text(lureButton, `${RODS.find(rod => rod.id === save.tackle.rod)?.name ?? 'Rod'} · ${LURES.find(lure => lure.id === snapshot.lure)?.name ?? snapshot.lure} ↗`);
     lureButton.disabled = snapshot.phase !== 'aim';
     const next = fight
       ? snapshot.behavior === 'tell' ? `Keep reeling · run/leap in ${Math.max(0, snapshot.surgeIn).toFixed(1)}s; then ease / give line`
@@ -156,8 +168,9 @@ export class GameUI {
           : snapshot.phase === 'aim' && !snapshot.legalTarget ? 'Shore ahead · turn toward clear water before casting'
             : snapshot.phase === 'cast' || snapshot.phase === 'wait' ? `${snapshot.precision ? 'Precision cast · ' : ''}${snapshot.lureHint}`
               : snapshot.phase === 'land' ? 'Your catch, your choice. Every fish is progress.' : snapshot.lureHint;
-    this.text(this.root.querySelector('.next-action')!, next);
+    this.text(this.root.querySelector('.next-action')!, travelling ? snapshot.mode === 'dock' ? 'Starter tackle is already yours, free. Walk toward the boat; the rack is behind you at z 35.' : snapshot.mode === 'helm' ? 'Leave the helm before casting. The map shows bearings, not shortcuts.' : 'Walk forward to the helm or fish from the deck. Walk aft to leave at a suitable dock.' : next);
     this.root.dataset.phase = snapshot.phase;
+    this.root.dataset.mode = snapshot.mode;
     this.root.classList.toggle('surge-warning', fight && snapshot.behavior === 'tell');
     this.root.classList.toggle('precision-ready', snapshot.phase === 'charge' && snapshot.precision);
     const bands = HOTSPOTS.filter(spot => spot.lure === snapshot.lure).flatMap(spot => {
@@ -166,8 +179,9 @@ export class GameUI {
       const crossSquared = dx * dx + dz * dz - along * along;
       if (crossSquared > spot.radius * spot.radius) return [];
       const reach = Math.sqrt(Math.max(0, spot.radius * spot.radius - crossSquared));
-      const start = Math.max(0, (along - reach - 10) / 28);
-      const end = Math.min(1, (along + reach - 10) / 28);
+      const range = RODS.find(rod => rod.id === save.tackle.rod)?.range ?? 38;
+      const start = Math.max(0, (along - reach - 10) / (range - 10));
+      const end = Math.min(1, (along + reach - 10) / (range - 10));
       return end > start ? [{ start, end }] : [];
     });
     const band = bands[0];
@@ -184,8 +198,8 @@ export class GameUI {
     this.meters.classList.toggle('danger', snapshot.tension > .76);
     this.text(this.root.querySelector('.tension-word')!, snapshot.tension > .76 ? 'HIGH · GIVE LINE' : snapshot.tension < .15 ? 'LOW · REEL' : 'BALANCED');
     this.root.querySelector('#line-tension')!.setAttribute('aria-valuetext', `${Math.round(snapshot.tension * 100)} percent tension`);
-    this.text(this.actionButton, fight ? 'Reel' : snapshot.phase === 'bite' ? 'Hook!' : snapshot.phase === 'charge' ? 'Charging…' : 'Cast');
-    this.actionButton.disabled = !['aim', 'charge', 'bite', 'fight'].includes(snapshot.phase);
+    this.text(this.actionButton, fight ? 'Reel' : snapshot.phase === 'bite' ? 'Hook!' : snapshot.phase === 'charge' ? 'Charging…' : snapshot.mode === 'deck' ? 'Fish' : 'Cast');
+    this.actionButton.disabled = !['aim', 'charge', 'bite', 'fight'].includes(snapshot.phase) || (snapshot.phase === 'aim' && (snapshot.mode === 'dock' || snapshot.mode === 'helm'));
     (this.root.querySelector('.retrieve-button') as HTMLElement).hidden = snapshot.phase !== 'cast' && snapshot.phase !== 'wait';
     (this.root.querySelector('[data-control="slack"]') as HTMLElement).hidden = !fight;
     this.touch.classList.toggle('is-fighting', fight);
@@ -205,7 +219,7 @@ export class GameUI {
     }
     this.root.classList.toggle('reduce-motion', save.settings.reducedMotion);
     if (this.modal === 'menu') {
-      const fingerprint = JSON.stringify(save);
+      const fingerprint = JSON.stringify([save, snapshot.mode, this.nearRack(), snapshot.phase]);
       if (fingerprint !== this.fingerprint) {
         this.fingerprint = fingerprint;
         this.refreshMenu();
@@ -242,18 +256,18 @@ export class GameUI {
   // Catch decisions trap focus, but must not pause the land-phase simulation.
   isModalOpen(): boolean { return this.modal !== null && this.modal !== 'catch'; }
 
-  openMenu(tab = 'Market'): void {
+  openMenu(tab = 'Map'): void {
     if (this.modal === 'catch' || this.modal === 'error' || this.modal === 'welcome') return;
     this.tab = TABS.find(t => t.toLowerCase() === tab.toLowerCase()) || 'Market';
-    this.beginModal('menu', 'The dock');
+    this.beginModal('menu', 'Lake guide');
     const heading = node('div', 'dialog-heading');
     const title = node('div');
-    title.append(node('p', 'eyebrow', 'A MOMENT ASHORE'), node('h1', '', 'The dock'));
+    title.append(node('p', 'eyebrow', 'PLAN YOUR NEXT GOOD STORY'), node('h1', '', 'Lake guide'));
     heading.append(title, button('×', 'close', undefined, 'close-button'));
     heading.lastElementChild!.setAttribute('aria-label', 'Return to the lake');
     const tabs = node('div', 'dock-tabs');
     tabs.setAttribute('role', 'tablist');
-    tabs.setAttribute('aria-label', 'Dock');
+    tabs.setAttribute('aria-label', 'Lake guide');
     for (const name of TABS) {
       const item = button(name, 'tab', name);
       item.id = `dock-tab-${name.toLowerCase()}`;
@@ -349,7 +363,7 @@ export class GameUI {
       <p class="welcome-tagline">Cast into the quiet.</p>
       <p class="loading-status" role="status">Your quiet corner of the world.</p>
       <button type="button" class="primary play-button" data-action="start" data-testid="start">Go fishing <span aria-hidden="true">↗</span></button>
-      <div class="welcome-controls"><span><kbd>W A S D</kbd> / arrows · move</span><span><kbd>Space</kbd> · cast, hook & reel</span><span><kbd>R</kbd> · give line <kbd>Esc</kbd> · pause</span><span>Drag to look · touch controls available</span></div>
+      <div class="welcome-controls"><span>Free starter tackle is already equipped.</span><span><kbd>W / S</kbd> walk from (−3, 32) toward the boat tip at z 30, then <kbd>E</kbd> board.</span><span>On deck, walk forward to helm · <kbd>E</kbd> take / leave helm.</span><span><kbd>Space</kbd> fish from deck, then cast, hook & reel.</span><span><kbd>R</kbd> give line · <kbd>Esc</kbd> pause · Drag to look.</span></div>
       <p class="welcome-footnote">Match the lure. Read the run. Find your legend.</p>`;
     this.focusModal();
   }
@@ -379,8 +393,10 @@ export class GameUI {
   }
 
   private buildTab(content: HTMLElement): void {
-    if (this.tab === 'Market') {
-      content.append(node('h2', '', 'The day’s catch'), node('p', 'muted-copy', 'Sell what you keep. Your discoveries and records are yours forever.'));
+    if (this.tab === 'Map') {
+      this.buildMap(content);
+    } else if (this.tab === 'Market') {
+      content.append(node('h2', '', 'The day’s catch'), node('p', 'muted-copy', 'Sell at the dock, on foot. Your discoveries and records are yours forever.'), node('p', 'market-access small-copy'));
       content.append(node('p', 'inventory-summary'));
       for (const species of SPECIES) {
         const row = this.row(content, species.name, species.rarity);
@@ -389,16 +405,26 @@ export class GameUI {
       }
       content.append(button('Sell all catches', 'sell', 'all', 'primary full-button'));
     } else if (this.tab === 'Tackle') {
-      content.append(node('h2', '', 'A little better equipped'));
+      content.append(node('h2', '', 'Your tackle locker'), node('p', 'muted-copy', 'Starter tackle is owned free. Equip owned tackle anywhere between casts. Buy tackle and upgrades only on foot near the starter dock’s rack (−3, 35).'), node('p', 'rack-access small-copy'));
+      content.append(node('h2', 'section-heading', 'Rods'), node('p', 'muted-copy', 'Range is maximum cast reach. Power drains fish stamina faster; control reduces tension gain. These bonuses stack with permanent upgrades.'));
+      for (const rod of RODS) {
+        const row = this.row(content, rod.name, `${rod.description} · Range ${rod.range} m · Power ×${rod.power.toFixed(2)} · Control ×${rod.control.toFixed(2)} · ${rod.cost === 0 ? 'Free starter' : `${rod.cost} ◈`}`);
+        row.dataset.rod = rod.id;
+        row.append(button('Equip', 'equipRod', rod.id));
+      }
+      content.append(node('h2', 'section-heading', 'Lures'));
+      for (const lure of LURES) {
+        const row = this.row(content, lure.name, `${lure.description} · ${lure.cost === 0 ? 'Free starter' : `${lure.cost} ◈`}`);
+        row.dataset.lure = lure.id;
+        row.append(button('Equip', 'equipLure', lure.id));
+      }
+      content.append(node('h2', 'section-heading', 'Permanent upgrades'), node('p', 'muted-copy', 'Existing upgrades stay active: each rod level adds 22% base fight power; each line level adds 20% base tension resistance.'));
       for (const kind of ['rod', 'line']) {
         const row = this.row(content, kind === 'rod' ? 'Reel & rod' : 'Fishing line', '');
         row.dataset.upgrade = kind;
         row.append(button('Upgrade', 'upgrade', kind));
       }
-      content.append(node('h2', 'section-heading', 'Choose your lure'), node('p', 'muted-copy', 'All three are yours. Match your lure to the water.'));
-      const lures = node('div', 'lure-options');
-      for (const [id, label] of [['spinner', 'Spinner · reeds & open water'], ['fly', 'Fly · cool eastern water'], ['minnow', 'Minnow · deep northern water']]) lures.append(button(label, 'lure', id));
-      content.append(lures, node('h2', 'section-heading', 'Make it yours'));
+      content.append(node('h2', 'section-heading', 'Make it yours'));
       const paints = node('div', 'paint-options');
       for (const [id, label] of [['teal', 'Tidal teal'], ['ivory', 'Warm ivory'], ['ember', 'Evening ember']]) {
         const paint = button(label, 'paint', id);
@@ -465,7 +491,7 @@ export class GameUI {
       const buttons = node('div', 'save-actions');
       buttons.append(button('Export save', 'export'), button('Import save', 'import-save'));
       content.append(label, textarea, buttons, button('Reset all progress…', 'reset-save', undefined, 'danger-button'));
-      content.append(node('h2', 'section-heading', 'On the water'), node('p', 'controls-copy', 'WASD / arrows to move · Hold Space to charge, release to cast · Space to hook or reel · R to give line · A / D to steer a fish · Escape to pause · Drag to look around. On touch, use the steering pad and Cast / Reel buttons. Alternate Reel and Give line; no simultaneous press needed.'));
+      content.append(node('h2', 'section-heading', 'Dock, deck, helm & fishing'), node('p', 'controls-copy', 'Start on foot at (−3, 32). W / S walks along the dock: move toward z 30, then E / the interaction button boards. On deck W / S walks: forward (local z < −0.5), E takes the helm. At the helm W / S controls throttle, A / D steers; E leaves the helm. Space / Fish starts fishing from deck. Walk aft (local z > 0.5), then E disembarks near a suitable dock. Tackle purchases require walking near the rack at (−3, 35); selling requires being on a dock. The toolbar Dock is a recovery return, not boarding.'), node('p', 'controls-copy', 'Fishing: hold Space / Cast to charge, release to cast; Space / Hook sets the hook; hold Space / Reel to reel. R / Give line eases tension; A / D steers a fish. Alternate Reel and Give line on touch. Retrieve before changing position. Escape pauses, drag looks / aims. Map destinations are information only: sail around islands, and cast into clear water without crossing land.'));
     }
   }
 
@@ -474,6 +500,51 @@ export class GameUI {
     const copy = node('div', 'row-copy');
     copy.append(node('h3', '', title), node('p', '', detail));
     row.append(copy); content.append(row); return row;
+  }
+
+  private nearRack(): boolean {
+    return this.snapshot?.mode === 'dock' && Math.hypot(this.snapshot.player.x + 3, this.snapshot.player.z - 35) <= 4;
+  }
+
+  private buildMap(content: HTMLElement): void {
+    content.append(node('h2', '', 'A wider world of water'), node('p', 'muted-copy', 'North is up. Bearings are compass headings from your boat; distances are straight-line metres, not safe routes. Sail around islands. Markers never move you or cast a lure.'));
+    const ns = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(ns, 'svg');
+    svg.classList.add('lake-map');
+    svg.setAttribute('viewBox', `${-WORLD.rx - 12} ${-WORLD.rz - 12} ${WORLD.rx * 2 + 24} ${WORLD.rz * 2 + 24}`);
+    svg.setAttribute('role', 'img');
+    svg.setAttribute('aria-label', 'Lake shoreline, islands, fishing destinations, boat and starter dock. Full destination bearings follow below.');
+    const shape = (tag: string, attrs: Record<string, string | number>, label?: string) => {
+      const element = document.createElementNS(ns, tag);
+      for (const [key, value] of Object.entries(attrs)) element.setAttribute(key, String(value));
+      if (label) {
+        const title = document.createElementNS(ns, 'title'); title.textContent = label; element.append(title);
+      }
+      svg.append(element);
+      return element;
+    };
+    shape('ellipse', { cx: 0, cy: 0, rx: WORLD.rx, ry: WORLD.rz, class: 'map-water' });
+    for (const island of WORLD.islands) shape('ellipse', { cx: island.x, cy: island.z, rx: island.rx, ry: island.rz, class: 'map-island' }, 'Island · impassable land');
+    const north = shape('text', { x: -WORLD.rx, y: -WORLD.rz, class: 'map-north' }); north.textContent = 'N ↑';
+    HOTSPOTS.forEach((spot, i) => {
+      shape('circle', { cx: spot.x, cy: spot.z, r: 4, class: 'map-destination' }, `${i + 1}. ${spot.name}`);
+      const text = shape('text', { x: spot.x + 6, y: spot.z - 3, class: 'map-label' }); text.textContent = String(i + 1);
+    });
+    shape('rect', { x: -4.4, y: 29, width: 2.8, height: 15, class: 'map-dock' }, 'Starter dock · tackle rack at (−3, 35)');
+    if (this.snapshot) {
+      shape('circle', { cx: this.snapshot.boat.x, cy: this.snapshot.boat.z, r: 3, class: 'map-boat' }, 'Your boat');
+      if (this.snapshot.mode === 'dock') shape('circle', { cx: this.snapshot.player.x, cy: this.snapshot.player.z, r: 1.8, class: 'map-player' }, 'You on foot');
+    }
+    content.append(svg, node('p', 'map-legend', '● Gold: destinations · ● White: boat · ▪ Ivory: dock · Green: islands / land'));
+    const boat = this.snapshot?.boat ?? { x: -3, z: 28 };
+    for (const [i, spot] of HOTSPOTS.entries()) {
+      const heading = (Math.atan2(spot.x - boat.x, boat.z - spot.z) * 180 / Math.PI + 360) % 360;
+      const region = regionAt(spot);
+      const found = this.save?.discoveries.includes(region);
+      this.row(content, `${i + 1}. ${spot.name}`, `${Math.round(heading)}° · ${Math.round(Math.hypot(spot.x - boat.x, spot.z - boat.z))} m · ${region} · ${found ? 'Region discovered' : 'Region unexplored'} · ${LURES.find(lure => lure.id === spot.lure)?.name ?? spot.lure}`);
+    }
+    const dockHeading = (Math.atan2(-3 - boat.x, boat.z - 30) * 180 / Math.PI + 360) % 360;
+    this.row(content, 'Starter dock & tackle rack', `${Math.round(dockHeading)}° · ${Math.round(Math.hypot(boat.x + 3, boat.z - 30))} m to boat tip · Board / disembark with E; walk to the rack at (−3, 35).`);
   }
 
   private setting(content: HTMLElement, title: string, input: HTMLElement): void {
@@ -495,31 +566,53 @@ export class GameUI {
     if (!save || this.modal !== 'menu') return;
     const content = this.body.querySelector('.dock-content')!;
     if (this.tab === 'Market') {
+      const onDock = this.snapshot?.mode === 'dock';
+      this.text(content.querySelector('.market-access')!, onDock ? 'Market open · you are on a dock.' : 'Market closed on water · disembark at a dock to sell.');
       this.text(content.querySelector('.inventory-summary')!, `Boat hold · ${save.inventory.length} / 30 catches`);
       for (const row of content.querySelectorAll<HTMLElement>('[data-species]')) {
         const catches = save.inventory.filter(c => c.species === row.dataset.species);
         const total = catches.reduce((sum, c) => sum + c.value, 0);
         this.text(row.querySelector('.inventory-value')!, `${catches.length} kept · ${total} ◈`);
-        row.querySelector('button')!.disabled = catches.length === 0;
+        row.querySelector('button')!.disabled = !onDock || catches.length === 0;
       }
       const sellAll = content.querySelector<HTMLButtonElement>('[data-value="all"]')!;
-      sellAll.disabled = !save.inventory.length;
+      sellAll.disabled = !onDock || !save.inventory.length;
       this.text(sellAll, `Sell all · ${save.inventory.reduce((sum, c) => sum + c.value, 0)} ◈`);
     } else if (this.tab === 'Tackle') {
+      const canBuy = this.nearRack() && this.snapshot?.phase === 'aim';
+      const canEquip = this.snapshot?.phase === 'aim';
+      this.text(content.querySelector('.rack-access')!, canBuy ? 'Rack open · purchases available.' : 'Purchases locked · walk to the dock rack. Owned gear can still be equipped between casts.');
+      for (const rod of RODS) {
+        const control = content.querySelector<HTMLButtonElement>(`[data-rod="${rod.id}"] button`)!;
+        const owned = save.tackle.rods.includes(rod.id);
+        const equipped = save.tackle.rod === rod.id;
+        control.dataset.action = owned ? 'equipRod' : 'buyRod';
+        control.disabled = equipped || (owned ? !canEquip : !canBuy || save.coins < rod.cost);
+        control.setAttribute('aria-pressed', String(equipped));
+        this.text(control, equipped ? 'Equipped' : owned ? 'Owned · Equip' : `Buy · ${rod.cost} ◈`);
+      }
+      for (const lure of LURES) {
+        const control = content.querySelector<HTMLButtonElement>(`[data-lure="${lure.id}"] button`)!;
+        const owned = save.tackle.lures.includes(lure.id);
+        const equipped = save.tackle.lure === lure.id;
+        control.dataset.action = owned ? 'equipLure' : 'buyLure';
+        control.disabled = equipped || (owned ? !canEquip : !canBuy || save.coins < lure.cost);
+        control.setAttribute('aria-pressed', String(equipped));
+        this.text(control, equipped ? 'Equipped' : owned ? 'Owned · Equip' : `Buy · ${lure.cost} ◈`);
+      }
       for (const kind of ['rod', 'line'] as const) {
         const row = content.querySelector(`[data-upgrade="${kind}"]`)!;
         const level = save[kind];
         const cost = UPGRADE_COSTS[level] ?? 0;
         this.text(row.querySelector('p')!, `Level ${level} / 3`);
         const upgrade = row.querySelector('button')!;
-        upgrade.disabled = level >= 3 || save.coins < cost;
+        upgrade.disabled = !canBuy || level >= 3 || save.coins < cost;
         this.text(upgrade, level >= 3 ? 'Fully upgraded' : `Upgrade · ${cost} ◈`);
       }
-      for (const lure of content.querySelectorAll<HTMLButtonElement>('[data-action="lure"]')) lure.setAttribute('aria-pressed', String(lure.dataset.value === this.snapshot?.lure));
       for (const paint of content.querySelectorAll<HTMLButtonElement>('[data-paint]')) {
         const id = paint.dataset.paint!;
         const owned = save.paints.includes(id) || save.paint === id;
-        paint.disabled = !owned && save.coins < 70;
+        paint.disabled = !owned && (!canBuy || save.coins < 70);
         paint.setAttribute('aria-pressed', String(save.paint === id));
         const title = id === 'teal' ? 'Tidal teal' : id === 'ivory' ? 'Warm ivory' : 'Evening ember';
         this.text(paint, `${title} · ${save.paint === id ? 'Equipped' : owned ? 'Equip' : '70 ◈'}`);
@@ -547,7 +640,7 @@ export class GameUI {
       this.text(content.querySelector('.legend-next')!, save.journal.king ? 'Legend landed. Return to the far north for another meeting with the King.' : bossUnlocked(save) ? 'Legend awakened → equip a minnow and cast into the far north. Read each golden surge through three fight phases.' : `Next goal → discover ${SPECIES.filter(s => s.id !== 'king' && !save.journal[s.id]).map(s => s.name).join(', ')}. Keep or release to record each discovery.`);
     } else if (this.tab === 'Quests') {
       this.refreshQuests(content, save);
-    } else {
+    } else if (this.tab === 'Settings') {
       for (const input of content.querySelectorAll<HTMLInputElement | HTMLSelectElement>('[data-setting]')) {
         const key = input.dataset.setting as keyof Save['settings'];
         if (document.activeElement === input) continue;
